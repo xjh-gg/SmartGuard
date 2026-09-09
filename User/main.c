@@ -56,6 +56,7 @@
 static Sensor_Data_t g_sensor;
 static Guard_Mode_t  g_mode    = MODE_AWAY;   /* 默认离家模式：入侵检测开启 */
 static Alert_Type_t  g_alert   = ALERT_NONE;
+static Alert_Type_t  g_manual_alert = ALERT_NONE;  /* 按键手动触发的测试告警 */
 static uint32_t      g_last_alarm_tick = 0;
 
 /* MPU6050 零偏校准值（初始化时学习） */
@@ -150,12 +151,39 @@ static void Hardware_InitAll(void)
 }
 
 /* ============ 采集所有传感器 ============ */
+
+/* 3 样本中值滤波：剔除单次毛刺 */
+static uint16_t median3_u16(uint16_t a, uint16_t b, uint16_t c) {
+    if (a > b) { uint16_t t = a; a = b; b = t; }
+    if (b > c) { uint16_t t = b; b = c; c = t; }
+    if (a > b) { uint16_t t = a; a = b; b = t; }
+    return b;
+}
+static float median3_f(float a, float b, float c) {
+    if (a > b) { float t = a; a = b; b = t; }
+    if (b > c) { float t = b; b = c; c = t; }
+    if (a > b) { float t = a; a = b; b = t; }
+    return b;
+}
+
 static void SampleAllSensors(void)
 {
     float temp = 0, humi = 0;
+    uint16_t light_raw[3];
+    float dist_raw[3];
+    int i;
 
-    g_sensor.light_adc = ADC_ReadPhotoresistor();   /* PF7/ADC3_IN5 */
-    g_sensor.distance  = HCSR04_GetDistance();
+    /* 光敏 + 距离各采 3 次取中值，抑制毛刺 */
+    for (i = 0; i < 3; i++) {
+        light_raw[i] = ADC_ReadPhotoresistor();
+        dist_raw[i]  = HCSR04_GetDistance();
+    }
+    g_sensor.light_adc = median3_u16(light_raw[0], light_raw[1], light_raw[2]);
+    {
+        float dm = median3_f(dist_raw[0], dist_raw[1], dist_raw[2]);
+        g_sensor.distance = (dm > 0.0f) ? dm : dist_raw[0];  /* 全失败保留首次值 */
+    }
+
     DHT11_Read_Data(&temp, &humi);
     g_sensor.temperature = temp;
     g_sensor.humidity    = humi;
@@ -213,8 +241,8 @@ static void HandleMatrixKey(void)
         case 'B': g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE AWAY\r\n");  break;
         case 'C': g_mode = MODE_SLEEP; DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE SLEEP\r\n"); break;
         case 'D':
-            g_alert = ALERT_INTRUSION;
-            /* BEEP OFF */
+            g_manual_alert = ALERT_INTRUSION;
+            g_last_alarm_tick = 0;   /* 强制立即发送 */
             USART1_SendString("-> MANUAL ALERT TEST\r\n");
             break;
     }
@@ -325,43 +353,49 @@ int main(void)
                 g_alert == ALERT_FIRE ? "!!FIRE!!" :
                 g_alert == ALERT_TAMPER ? "!!TAMPER!!" : "!!ENV!!");
 
-            /* 告警处理 */
-            if (g_alert != ALERT_NONE) {
+            /* 告警处理 —— 统一出口（决策引擎 + 手动测试） */
+            {
+                Alert_Type_t effective = (g_manual_alert != ALERT_NONE) ? g_manual_alert : g_alert;
+                static Alert_Type_t s_last_effective = ALERT_NONE;
                 uint32_t now = loop_tick / 10;
-                if (now - g_last_alarm_tick >= 5) {
-                    /* BEEP OFF */
-                    LED_Toggle(1);
+                uint8_t state_changed = (effective != s_last_effective);
+
+                if (effective != ALERT_NONE) {
+                    if (state_changed || now - g_last_alarm_tick >= 5) {
+                        LED_Toggle(1);
 
 #if USE_ESP8266
-                    if (g_alert == ALERT_INTRUSION)
-                        ESP8266_SendAlert("Intrusion!");
-                    else if (g_alert == ALERT_FIRE)
-                        ESP8266_SendAlert("Fire!");
-                    else if (g_alert == ALERT_TAMPER)
-                        ESP8266_SendAlert("Tamper!");
-                    else
-                        ESP8266_SendAlert("EnvAbnormal!");
+                        if (effective == ALERT_INTRUSION)
+                            ESP8266_SendAlert("Intrusion!");
+                        else if (effective == ALERT_FIRE)
+                            ESP8266_SendAlert("Fire!");
+                        else if (effective == ALERT_TAMPER)
+                            ESP8266_SendAlert("Tamper!");
+                        else
+                            ESP8266_SendAlert("EnvAbnormal!");
 #endif
 
 #if USE_ESP32_CAM
-                    /* 入侵告警时触发 ESP32-CAM 拍照 */
-                    if (g_alert == ALERT_INTRUSION) {
-                        char cam_url[96];
-                        ESP32CAM_Status_t cam_st = ESP32CAM_TriggerCapture(cam_url, sizeof(cam_url));
-                        if (cam_st == CAM_OK) {
-                            USART1_Printf("[ESP32-CAM] photo: %s\r\n", cam_url);
-                        } else if (cam_st == CAM_OFFLINE) {
-                            USART1_SendString("[ESP32-CAM] offline\r\n");
-                        } else {
-                            USART1_Printf("[ESP32-CAM] failed (%d)\r\n", cam_st);
+                        if (effective == ALERT_INTRUSION) {
+                            char cam_url[96];
+                            ESP32CAM_Status_t cam_st = ESP32CAM_TriggerCapture(cam_url, sizeof(cam_url));
+                            if (cam_st == CAM_OK) {
+                                USART1_Printf("[ESP32-CAM] photo: %s\r\n", cam_url);
+                            } else if (cam_st == CAM_OFFLINE) {
+                                USART1_SendString("[ESP32-CAM] offline\r\n");
+                            } else {
+                                USART1_Printf("[ESP32-CAM] failed (%d)\r\n", cam_st);
+                            }
                         }
-                    }
 #endif
 
-                    g_last_alarm_tick = now;
+                        g_last_alarm_tick = now;
+                        g_manual_alert = ALERT_NONE;  /* 手动告警发完即清 */
+                    }
+                } else {
+                    LED_OFF(1);
                 }
-            } else {
-                LED_OFF(1);
+                s_last_effective = effective;
             }
         }
 

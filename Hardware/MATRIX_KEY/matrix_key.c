@@ -1,12 +1,16 @@
 /**
   ******************************************************************************
   * @file    matrix_key.c
-  * @brief   4x4 矩阵键盘驱动程序（列扫描方式，带消抖与松手等待）
+  * @brief   4x4 矩阵键盘驱动程序（列扫描方式，非阻塞状态机）
   *
   * 扫描原理：
   *   列线设为推挽输出，行线设为上拉输入。
   *   依次将每一列拉低，其余列拉高；若某一行被读为低电平，说明该 (行,列)
-  *   位置有键按下。通过 10ms 消抖 + 松手等待，保证一次按下仅返回一次键值。
+  *   位置有键按下。通过主循环 ~100ms 调用间隔天然消抖，无需内部延时。
+  *
+  * 状态机：
+  *   IDLE → 检测到按下 → PRESSED（返回键值）→ 检测到松手 → IDLE
+  *   按住期间每次调用返回 0，松手后才允许下一次触发。
   *
   * 按键映射关系（已做转置补偿）：
   *   物理(row,col) -> 代码扫描到(r=col, c=row)
@@ -14,16 +18,6 @@
   ******************************************************************************
   */
 #include "matrix_key.h"
-
-/* ========== 简易毫秒延时（矩阵键盘内部自用，避免依赖外部 delay） ========== */
-static void MatrixKey_DelayMs(uint32_t ms)
-{
-    volatile uint32_t n;
-    while (ms--)
-    {
-        for (n = 0; n < 16800; n++);
-    }
-}
 
 /* ============================================================
  *  按键映射表（物理丝印 123A / 456B / 789C / *0#D）
@@ -90,58 +84,54 @@ void Matrix_Key_Init(void)
 }
 
 /**
-  * @brief  扫描一次 4x4 矩阵键盘（单次调用最多返回一个有效键值）
-  * @retval 按键对应的字符：'1'~'9','0','A'~'D','*','#'；无键按下返回 0
+  * @brief  非阻塞扫描 4x4 矩阵键盘（状态机）
+  * @retval 按键字符：'1'~'9','0','A'~'D','*','#'；无键/未完成返回 0
   *
-  * 说明：
-  *   1. 逐列拉低 -> 读行电平 -> 命中后 10ms 消抖二次确认
-  *   2. 松手等待（避免长按连续触发）
-  *   3. 退出前所有列重新拉高，保证下一次扫描一致
+  * 状态机：IDLE → PRESSED（检测到按下）→ IDLE（检测到松手）
+  *   利用主循环 ~100ms 调用间隔作为天然消抖，无需内部延时。
+  *   按下时立即返回键值，松手后才允许下一次触发。
   */
 char Key_Scan(void)
 {
+    static enum { KS_IDLE, KS_PRESSED } ks_state = KS_IDLE;
+    static char ks_key = 0;
+    static int  ks_row = 0, ks_col = 0;
     int col, row, i;
-    char key_val = 0;
 
-    /* 逐列扫描：选中列 -> 拉低；未选中 -> 拉高 */
-    for (col = 0; col < 4; col++)
+    if (ks_state == KS_PRESSED)
     {
-        /* 先把 4 列全部拉高，再把当前列拉低（安全切换） */
+        /* 检查之前按下的键是否已松手 */
+        if (GPIO_ReadInputDataBit(ROW_PORT[ks_row], ROW_PIN[ks_row]) == Bit_SET)
+        {
+            ks_state = KS_IDLE;
+        }
+        /* 恢复列线 */
         for (i = 0; i < 4; i++)
             GPIO_SetBits(COL_PORT[i], COL_PIN[i]);
+        return 0;
+    }
 
+    /* KS_IDLE：逐列扫描检测按下 */
+    for (col = 0; col < 4; col++)
+    {
+        for (i = 0; i < 4; i++)
+            GPIO_SetBits(COL_PORT[i], COL_PIN[i]);
         GPIO_ResetBits(COL_PORT[col], COL_PIN[col]);
-        MatrixKey_DelayMs(1);   /* 等列线电平稳定 */
 
-        /* 遍历 4 条行线，看哪条被拉低 */
         for (row = 0; row < 4; row++)
         {
             if (GPIO_ReadInputDataBit(ROW_PORT[row], ROW_PIN[row]) == Bit_RESET)
             {
-                /* 消抖：10ms 后再次判定仍为低才算有效按下 */
-                MatrixKey_DelayMs(10);
-                if (GPIO_ReadInputDataBit(ROW_PORT[row], ROW_PIN[row]) == Bit_RESET)
-                {
-                    /* 查表得到该位置对应的字符 */
-                    key_val = key_map[row][col];
-
-                    /* 松手等待：用户手指抬起后才允许返回 */
-                    while (GPIO_ReadInputDataBit(ROW_PORT[row], ROW_PIN[row]) == Bit_RESET);
-                    MatrixKey_DelayMs(10);   /* 松手消抖，避免弹片抖动 */
-
-                    /* 恢复所有列为高电平，保持扫描空闲态 */
-                    for (i = 0; i < 4; i++)
-                        GPIO_SetBits(COL_PORT[i], COL_PIN[i]);
-
-                    return key_val;
-                }
+                ks_key  = key_map[row][col];
+                ks_row  = row;
+                ks_col  = col;
+                ks_state = KS_PRESSED;
+                return ks_key;
             }
         }
     }
 
-    /* 无按键：确保所有列都回到高电平 */
     for (i = 0; i < 4; i++)
         GPIO_SetBits(COL_PORT[i], COL_PIN[i]);
-
     return 0;
 }
