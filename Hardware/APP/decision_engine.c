@@ -11,8 +11,9 @@
   *   - 需要先跑 20s 基线学习 → 采数据 → 训练 → 设 USE_ML=1
   *
   * v0.5 遗留：
-  *   - 条件编译包裹 OLED/ESP8266 依赖（可独立编译）
+  *   - 条件编译包裹 OLED/ML 依赖（可独立编译）
   *   - 入侵检测优先 AT_CheckIntrusion，fallback 固定阈值
+  *   - 告警发送由 main.c 统一调度，本模块只负责判定
   ******************************************************************************
   */
 #include "decision_engine.h"
@@ -23,10 +24,6 @@
 #include "pwm.h"
 #include "usart.h"
 #include "string.h"
-
-#if defined(USE_ESP8266) && USE_ESP8266
-  #include "esp8266.h"
-#endif
 
 #if defined(USE_ML) && USE_ML
   #include "ml_inference.h"
@@ -222,9 +219,6 @@ Alert_Type_t DecisionEngine_Run(const Sensor_Data_t *data)
                 /* 注意：源文件为无 BOM UTF-8，ARMCC 按 GBK 扫描，全角标点须保持
                    字节配对合法，故此处用半角 '!'（改回全角'！'会触发 #870-D） */
                 USART1_Printf("[ALERT] 入侵告警! 距离=%.1fcm\r\n", data->distance);
-#if defined(USE_ESP8266) && USE_ESP8266
-                ESP8266_SendAlert("intrusion");
-#endif
                 break;
 
             case ALERT_FIRE:
@@ -233,9 +227,6 @@ Alert_Type_t DecisionEngine_Run(const Sensor_Data_t *data)
                 LED_ON(2);
                 USART1_Printf("[ALERT] 火灾告警! MQ2=%d T=%.1fC\r\n",
                               data->mq2_adc, data->temperature);
-#if defined(USE_ESP8266) && USE_ESP8266
-                ESP8266_SendAlert("fire");
-#endif
                 break;
 
             case ALERT_TAMPER:
@@ -243,9 +234,6 @@ Alert_Type_t DecisionEngine_Run(const Sensor_Data_t *data)
                 LED_ON(1);
                 LED_OFF(2);
                 USART1_SendString("[ALERT] 防拆告警!\r\n");
-#if defined(USE_ESP8266) && USE_ESP8266
-                ESP8266_SendAlert("tamper");
-#endif
                 break;
 
             default:

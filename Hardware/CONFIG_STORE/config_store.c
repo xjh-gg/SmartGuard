@@ -11,7 +11,7 @@
 #include "config_store.h"
 #include <stddef.h>   /* offsetof 宏 */
 
-/* ====== CRC 计算范围偏移：magic 到 humi_ewma，不含 crc32（由 offsetof 自动计算） ====== */
+/* ====== CRC 计算范围偏移：magic 到 reserved2，不含 crc32（由 offsetof 自动计算） ====== */
 #define CRC_RANGE_OFFSET  (offsetof(ConfigStore_t, magic))
 #define CRC_RANGE_LEN     (offsetof(ConfigStore_t, crc32) - offsetof(ConfigStore_t, magic))
 
@@ -44,13 +44,19 @@ uint8_t Config_Load(AT_Baseline_t *bl, Guard_Mode_t *mode)
     if (p->crc32 != Config_CalcCRC(p)) return 0;
 
     /* 3. 数据有效，复制出来 */
-    bl->light_baseline = p->light_baseline;
-    bl->temp_baseline  = p->temp_baseline;
-    bl->humi_baseline  = p->humi_baseline;
-    bl->is_learned     = p->is_learned;
-    bl->light_ewma     = p->light_ewma;
-    bl->temp_ewma      = p->temp_ewma;
-    bl->humi_ewma      = p->humi_ewma;
+    bl->light_baseline    = p->light_baseline;
+    bl->temp_baseline     = p->temp_baseline;
+    bl->humi_baseline     = p->humi_baseline;
+    bl->is_learned        = p->is_learned;
+    bl->light_sigma       = p->light_sigma;
+    bl->mq2_sigma         = p->mq2_sigma;
+    bl->temp_sigma        = p->temp_sigma;
+    bl->humi_sigma        = p->humi_sigma;
+    bl->mq2_fire_threshold= p->mq2_fire_threshold;
+    bl->light_ewma        = p->light_ewma;
+    bl->temp_ewma         = p->temp_ewma;
+    bl->humi_ewma         = p->humi_ewma;
+    bl->mq2_ewma          = p->mq2_ewma;
     *mode = p->mode;
     return 1;
 }
@@ -70,17 +76,24 @@ uint8_t Config_Save(const AT_Baseline_t *bl, Guard_Mode_t mode)
     uint32_t *p_dst;
 
     /* 1. 填充结构体 */
-    cfg.magic          = CONFIG_MAGIC;
-    cfg.light_baseline = bl->light_baseline;
-    cfg.temp_baseline  = bl->temp_baseline;
-    cfg.humi_baseline  = bl->humi_baseline;
-    cfg.mode           = mode;
-    cfg.is_learned     = bl->is_learned;
-    cfg.light_ewma     = bl->light_ewma;
-    cfg.temp_ewma      = bl->temp_ewma;
-    cfg.humi_ewma      = bl->humi_ewma;
-    for (i = 0; i < sizeof(cfg.reserved); i++) cfg.reserved[i] = 0;
-    cfg.crc32          = Config_CalcCRC(&cfg);   /* CRC 不包含自己，所以放最后计算 */
+    cfg.magic             = CONFIG_MAGIC;
+    cfg.light_baseline    = bl->light_baseline;
+    cfg.temp_baseline     = bl->temp_baseline;
+    cfg.humi_baseline     = bl->humi_baseline;
+    cfg.mode              = mode;
+    cfg.is_learned        = bl->is_learned;
+    cfg.reserved          = 0;
+    cfg.light_sigma       = bl->light_sigma;
+    cfg.mq2_sigma         = bl->mq2_sigma;
+    cfg.temp_sigma        = bl->temp_sigma;
+    cfg.humi_sigma        = bl->humi_sigma;
+    cfg.mq2_fire_threshold= bl->mq2_fire_threshold;
+    cfg.reserved2         = 0;
+    cfg.light_ewma        = bl->light_ewma;
+    cfg.temp_ewma         = bl->temp_ewma;
+    cfg.humi_ewma         = bl->humi_ewma;
+    cfg.mq2_ewma          = bl->mq2_ewma;
+    cfg.crc32             = Config_CalcCRC(&cfg);   /* CRC 不包含自己，所以放最后计算 */
 
     /* 2. 解锁 FLASH */
     FLASH_Unlock();
