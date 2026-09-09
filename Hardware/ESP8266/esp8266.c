@@ -211,18 +211,11 @@ int16_t ESP8266_Receive(uint8_t *buf, uint16_t len, uint16_t timeout_ms)
     uint16_t first_num = 0;
     uint16_t pkt_len = 0;
     uint8_t state = 0;
-    static uint8_t s_first_call = 1;
-    uint16_t dbg_cnt = 0;
 
     while (timeout_ms--)
     {
         while (USART3_GetByte(&ch))
         {
-            if (s_first_call && dbg_cnt < 80) {
-                U1_PRINTF("[RX%02u]%02X ", dbg_cnt, ch);
-                if (dbg_cnt == 79) U1_PRINTF("\r\n");
-                dbg_cnt++;
-            }
             switch (state)
             {
                 case 0:   /* 等待 '+' */
@@ -264,7 +257,6 @@ int16_t ESP8266_Receive(uint8_t *buf, uint16_t len, uint16_t timeout_ms)
                     pkt_len--;
                     if (pkt_len == 0 || rx_idx >= len)
                     {
-                        s_first_call = 0;
                         return rx_idx;
                     }
                     break;
@@ -278,10 +270,6 @@ int16_t ESP8266_Receive(uint8_t *buf, uint16_t len, uint16_t timeout_ms)
         delay_ms(1);
     }
 
-    if (s_first_call && dbg_cnt > 0) {
-        U1_PRINTF("[RX] total %u raw bytes, timeout\r\n", dbg_cnt);
-        s_first_call = 0;
-    }
     return rx_idx;
 }
 
@@ -385,6 +373,7 @@ static uint16_t HTTP_FindField(const uint8_t *buf, uint16_t buf_len,
     return 0;
 }
 
+#if 0  /* HTTP 时间同步已被 NTP 取代，保留代码供参考 */
 /**
   * @brief  通过 HTTP API 获取网络时间（UTC+8）
   * @retval 1=成功，0=失败
@@ -528,6 +517,7 @@ restore_udp:
     ESP8266_ConnectUDP(ESP8266_UDP_SERVER_IP, ESP8266_UDP_SERVER_PORT);
     return success;
 }
+#endif
 
 /**
   * @brief  Unix 时间戳转日期时间（纯整数运算，不依赖 localtime）
@@ -674,6 +664,7 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
         U1_PRINTF("[NTP] raw %u bytes\r\n", raw_len);
 
         /* 调试：打印原始数据十六进制 */
+#ifdef DEBUG_NTP
         {
             uint16_t di;
             U1_PRINTF("[NTP] HEX: ");
@@ -682,6 +673,7 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
             }
             U1_PRINTF("\r\n");
         }
+#endif
 
         if (raw_len < 48) {
             U1_PRINTF("[NTP] response too short\r\n");
