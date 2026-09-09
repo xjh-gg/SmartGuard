@@ -1,4 +1,4 @@
-/**
+﻿/**
   ******************************************************************************
   * @file    rtc.c
   * @brief   RTC driver for STM32F407 -- LSE/LSI auto-fallback + Wakeup Timer 1s interrupt
