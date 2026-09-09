@@ -177,6 +177,7 @@ static void SampleAllSensors(void)
     for (i = 0; i < 3; i++) {
         light_raw[i] = ADC_ReadPhotoresistor();
         dist_raw[i]  = HCSR04_GetDistance();
+        if (i < 2) delay_ms(30);   /* HC-SR04 需要 ≥60ms 测量周期 */
     }
     g_sensor.light_adc = median3_u16(light_raw[0], light_raw[1], light_raw[2]);
     {
