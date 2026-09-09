@@ -11,7 +11,7 @@
 #include "config_store.h"
 #include <stddef.h>   /* offsetof 宏 */
 
-/* ====== CRC 计算范围偏移：magic 到 reserved 共 28 字节，不含 crc32 ====== */
+/* ====== CRC 计算范围偏移：magic 到 humi_ewma，不含 crc32（由 offsetof 自动计算） ====== */
 #define CRC_RANGE_OFFSET  (offsetof(ConfigStore_t, magic))
 #define CRC_RANGE_LEN     (offsetof(ConfigStore_t, crc32) - offsetof(ConfigStore_t, magic))
 
@@ -47,6 +47,10 @@ uint8_t Config_Load(AT_Baseline_t *bl, Guard_Mode_t *mode)
     bl->light_baseline = p->light_baseline;
     bl->temp_baseline  = p->temp_baseline;
     bl->humi_baseline  = p->humi_baseline;
+    bl->is_learned     = p->is_learned;
+    bl->light_ewma     = p->light_ewma;
+    bl->temp_ewma      = p->temp_ewma;
+    bl->humi_ewma      = p->humi_ewma;
     *mode = p->mode;
     return 1;
 }
@@ -71,6 +75,10 @@ uint8_t Config_Save(const AT_Baseline_t *bl, Guard_Mode_t mode)
     cfg.temp_baseline  = bl->temp_baseline;
     cfg.humi_baseline  = bl->humi_baseline;
     cfg.mode           = mode;
+    cfg.is_learned     = bl->is_learned;
+    cfg.light_ewma     = bl->light_ewma;
+    cfg.temp_ewma      = bl->temp_ewma;
+    cfg.humi_ewma      = bl->humi_ewma;
     for (i = 0; i < sizeof(cfg.reserved); i++) cfg.reserved[i] = 0;
     cfg.crc32          = Config_CalcCRC(&cfg);   /* CRC 不包含自己，所以放最后计算 */
 

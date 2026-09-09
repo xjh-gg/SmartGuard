@@ -60,9 +60,9 @@ void DecisionEngine_SetMode(Guard_Mode_t mode)
         s_mode = mode;
         switch (mode)
         {
-            case MODE_HOME:  USART1_SendString("[MODE] HOME 在家模式 - 入侵检测关\n");   break;
-            case MODE_AWAY:  USART1_SendString("[MODE] AWAY 离家模式 - 入侵检测开\n");   break;
-            case MODE_SLEEP: USART1_SendString("[MODE] SLEEP 睡眠模式 - 入侵检测开\n"); break;
+            case MODE_HOME:  USART1_SendString("[MODE] HOME 在家模式 - 入侵检测关\r\n");   break;
+            case MODE_AWAY:  USART1_SendString("[MODE] AWAY 离家模式 - 入侵检测开\r\n");   break;
+            case MODE_SLEEP: USART1_SendString("[MODE] SLEEP 睡眠模式 - 入侵检测开\r\n"); break;
         }
         Beep_Off();
         LED_OFF(1);
@@ -231,7 +231,7 @@ Alert_Type_t DecisionEngine_Run(const Sensor_Data_t *data)
                 /* Beep_On(); */     /* 蜂鸣器已关闭 */
                 LED_ON(1);
                 LED_ON(2);
-                USART1_Printf("[ALERT] 火灾告警！MQ2=%d T=%.1fC\r\n",
+                USART1_Printf("[ALERT] 火灾告警! MQ2=%d T=%.1fC\r\n",
                               data->mq2_adc, data->temperature);
 #if defined(USE_ESP8266) && USE_ESP8266
                 ESP8266_SendAlert("fire");
@@ -242,7 +242,7 @@ Alert_Type_t DecisionEngine_Run(const Sensor_Data_t *data)
                 /* Beep_On(); */     /* 蜂鸣器已关闭 */
                 LED_ON(1);
                 LED_OFF(2);
-                USART1_SendString("[ALERT] 防拆告警！\r\n");
+                USART1_SendString("[ALERT] 防拆告警!\r\n");
 #if defined(USE_ESP8266) && USE_ESP8266
                 ESP8266_SendAlert("tamper");
 #endif
@@ -252,7 +252,7 @@ Alert_Type_t DecisionEngine_Run(const Sensor_Data_t *data)
                 Beep_Off();
                 LED_OFF(1);
                 LED_OFF(2);
-                USART1_SendString("[OK] 环境正常\n");
+                USART1_SendString("[OK] 环境正常\r\n");
                 break;
         }
         s_alert_last = alert;

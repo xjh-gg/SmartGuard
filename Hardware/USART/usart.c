@@ -29,8 +29,10 @@ static volatile uint8_t  usart2_rx_buf[RX_BUF_SIZE];
 static volatile uint16_t usart2_rx_head = 0;
 static volatile uint16_t usart2_rx_tail = 0;
 
-/* Printf 临时缓冲区（避免在函数内开大栈空间） */
-static char printf_buf[128];
+/* Printf 临时缓冲区（每个串口独立，避免并发调用时数据交叉） */
+static char printf_buf1[128];
+static char printf_buf2[128];
+static char printf_buf3[128];
 
 /**
   * @brief  初始化 USART1
@@ -119,15 +121,15 @@ void USART1_Printf(const char *fmt, ...)
     int len, i;
 
     va_start(ap, fmt);
-    len = vsnprintf(printf_buf, sizeof(printf_buf), fmt, ap);
+    len = vsnprintf(printf_buf1, sizeof(printf_buf1), fmt, ap);
     va_end(ap);
 
     if (len < 0) return;
-    if (len >= (int)sizeof(printf_buf)) len = sizeof(printf_buf) - 1;
+    if (len >= (int)sizeof(printf_buf1)) len = sizeof(printf_buf1) - 1;
 
     for (i = 0; i < len; i++)
     {
-        USART1_SendByte((uint8_t)printf_buf[i]);
+        USART1_SendByte((uint8_t)printf_buf1[i]);
     }
     while (USART_GetFlagStatus(USART1, USART_FLAG_TC) == RESET);
 }
@@ -276,15 +278,15 @@ void USART2_Printf(const char *fmt, ...)
     int len, i;
 
     va_start(ap, fmt);
-    len = vsnprintf(printf_buf, sizeof(printf_buf), fmt, ap);
+    len = vsnprintf(printf_buf2, sizeof(printf_buf2), fmt, ap);
     va_end(ap);
 
     if (len < 0) return;
-    if (len >= (int)sizeof(printf_buf)) len = sizeof(printf_buf) - 1;
+    if (len >= (int)sizeof(printf_buf2)) len = sizeof(printf_buf2) - 1;
 
     for (i = 0; i < len; i++)
     {
-        USART2_SendByte((uint8_t)printf_buf[i]);
+        USART2_SendByte((uint8_t)printf_buf2[i]);
     }
     while (USART_GetFlagStatus(USART2, USART_FLAG_TC) == RESET);
 }

@@ -31,15 +31,19 @@
 /* 魔数："SGDG" = SmartGuard */
 #define CONFIG_MAGIC            0x53474447UL
 
-/* ==== 配置结构体（32 字节，擦除时整页擦 + 写入） ==== */
+/* ==== 配置结构体（44 字节，擦除时整页擦 + 写入） ==== */
 typedef struct {
     uint32_t        magic;              /* 魔数，验证是我们自己存的 */
     uint16_t        light_baseline;     /* 光敏基线 */
     float           temp_baseline;      /* 温度基线 (°C) */
     float           humi_baseline;      /* 湿度基线 (%) */
     Guard_Mode_t    mode;               /* 当前模式 */
-    uint8_t         reserved[3];        /* 对齐 */
-    uint32_t        crc32;              /* CRC32（校验范围 = magic 到 reserved，不含 crc32 自己） */
+    uint8_t         is_learned;         /* 1=基线已学习，0=未学习 */
+    uint8_t         reserved[2];        /* 对齐 */
+    float           light_ewma;         /* EWMA 动态光敏基线 */
+    float           temp_ewma;          /* EWMA 动态温度基线 */
+    float           humi_ewma;          /* EWMA 动态湿度基线 */
+    uint32_t        crc32;              /* CRC32（校验范围 = magic 到 ewma，不含 crc32 自己） */
 } ConfigStore_t;
 
 /* 对外接口 */

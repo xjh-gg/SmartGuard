@@ -9,7 +9,7 @@
   *   MatrixKey   — COL: PB7/PA4/PG15/PC7, ROW: PC9/PB6/PE6/PA8
   *   LED         — PF9/PF10/PE13/PE14 (低电平亮), BEEP: PF8
   *   OLED SSD1306 — PB0=CLK PF11=MOSI PB1=DC PC13=CS1, CS2接VCC
-  *   ESP8266     — USART3 PB10/PB11, 9600bps
+  *   ESP8266     — USART3 PB10/PB11, 115200bps
   */
 
 /* ============ 编译开关（必须在 include 之前定义）============ */
@@ -18,7 +18,7 @@
 
 /* ============ TinyML 数据采集 ============ */
 /* 1=每 2s 输出 CSV 行到串口 + ESP8266 UDP，用于后期训练 sklearn MLP */
-#define ML_DATA_COLLECT  1
+#define ML_DATA_COLLECT  0
 
 #include "stm32f4xx.h"
 #include "delay.h"
@@ -291,7 +291,7 @@ int main(void)
 #endif
 
     /* ========== 启动独立看门狗（基线学习完成后再启动，避免 20s 阻塞超时） ========== */
-    USART1_SendString("\r\n[INIT] IWDG 1s watchdog...");
+    USART1_SendString("\r\n[INIT] IWDG 2s watchdog...");
     IWDG_Init();
     USART1_SendString("OK\r\n");
 
@@ -422,7 +422,7 @@ int main(void)
         HandleMatrixKey();
 #endif
 
-        /* 喂独立看门狗（1s 超时，主循环 100ms tick 足够） */
+        /* 喂独立看门狗（2s 超时，主循环 100ms tick 足够） */
         IWDG_Feed();
     }
 }
