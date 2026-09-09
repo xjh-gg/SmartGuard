@@ -32,18 +32,18 @@
 #define LIGHT_GPIO_PIN          GPIO_Pin_7
 #define LIGHT_GPIO_CLK          RCC_AHB1Periph_GPIOF
 
-/* MQ-2 烟雾传感器：ADC1 通道 6 -> PA6 */
+/* MQ-2 烟雾传感器：ADC1 通道 4 -> PA4 */
 #define MQ2_ADC                 ADC1
 #define MQ2_ADC_CLK             RCC_APB2Periph_ADC1
-#define MQ2_ADC_CHANNEL         ADC_Channel_6
+#define MQ2_ADC_CHANNEL         ADC_Channel_4
 #define MQ2_GPIO_PORT           GPIOA
-#define MQ2_GPIO_PIN            GPIO_Pin_6
+#define MQ2_GPIO_PIN            GPIO_Pin_4
 #define MQ2_GPIO_CLK            RCC_AHB1Periph_GPIOA
 
 /* MQ-2 硬件开关：0=未接线（ADC_ReadMQ2 恒返回 0，火灾分支自动不触发）
-   1=已接 MQ-2（PA6 模拟输入，5V 供电；上电需预热数分钟再做基线学习） */
+   1=已接 MQ-2（PA4 模拟输入，5V 供电；上电需预热数分钟再做基线学习） */
 #ifndef USE_MQ2
-#define USE_MQ2                 0
+#define USE_MQ2                 1
 #endif
 
 void ADC_Hardware_Init(void);
