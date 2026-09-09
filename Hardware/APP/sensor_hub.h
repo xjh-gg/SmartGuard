@@ -1,4 +1,4 @@
-#ifndef __SENSOR_HUB_H
+﻿#ifndef __SENSOR_HUB_H
 #define __SENSOR_HUB_H
 
 #include "stm32f4xx.h"
