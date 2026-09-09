@@ -1,0 +1,77 @@
+# Keil MDK build output
+Object/
+build/
+Build/
+build_log.txt
+
+# Keil MDK generated files
+*.o
+*.d
+*.crf
+*.lnp
+*.htm
+*.html
+*.map
+*.axf
+*.hex
+*.bin
+*.elf
+*.lst
+*.sct
+*.dep
+*.bak
+*.tmp
+
+# Keil MDK project user files
+*.uvoptx
+*.uvopt
+*.uvguix.*
+*.scvd
+*.mif
+*.exe
+*.dbgconf
+
+# JLink debug settings
+JLinkLog/
+JLinkSettings.ini
+JLinkLog.txt
+
+# ST-Link
+ST-Link/
+
+# RTE (Run-Time Environment)
+RTE/_*/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Archive files (source already extracted)
+*.rar
+*.zip
+
+# Python scripts (not firmware source)
+*.py
+*.ps1
+
+# Temporary and test files
+test_image.jpg
+*.log
+
+# Backup files
+*.bak_*
+
+# Build and flash logs
+build_cli.txt
+build_log_v*.txt
+build_output.txt
+flash_log.txt
+serial_log*.txt
+
+# Runtime data
+alerts.json
