@@ -59,5 +59,6 @@ void    ESP8266_SendData(const char *topic, const char *payload);
 uint8_t ESP8266_GetHTTPTime(RTC_DateTime_t *dt);       /* HTTP 方式获取网络时间（UTC+8） */
 uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt);        /* NTP/UDP 方式获取网络时间（UTC+8） */
 uint8_t ESP8266_CheckInternet(void);
+uint8_t ESP8266_CheckHealth(void);
 
 #endif /* __ESP8266_H__ */

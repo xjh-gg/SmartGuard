@@ -274,24 +274,38 @@ uint8_t SG_RTC_IsInitialized(void)
 void SG_RTC_SetDateTime(uint8_t year, uint8_t month, uint8_t date,
                         uint8_t hours, uint8_t minutes, uint8_t seconds)
 {
+    uint32_t wait;
+
     PWR_BackupAccessCmd(ENABLE);
+    RTC_WPR_UNLOCK();
     if (RTC_EnterInitMode() != SUCCESS) {
+        USART1_SendString("[RTC] ERR: enter init mode failed\r\n");
+        RTC_WPR_LOCK();
         PWR_BackupAccessCmd(DISABLE);
         return;
     }
+
     RTC_DateTypeDef d;
     d.RTC_Year    = ((year / 10) << 4) | (year % 10);
     d.RTC_Month   = ((month / 10) << 4) | (month % 10);
     d.RTC_Date    = ((date / 10) << 4) | (date % 10);
     d.RTC_WeekDay = 1;
     RTC_SetDate(RTC_Format_BCD, &d);
+
     RTC_TimeTypeDef t;
     t.RTC_H12     = RTC_H12_AM;
     t.RTC_Hours   = ((hours / 10) << 4) | (hours % 10);
     t.RTC_Minutes = ((minutes / 10) << 4) | (minutes % 10);
     t.RTC_Seconds = ((seconds / 10) << 4) | (seconds % 10);
     RTC_SetTime(RTC_Format_BCD, &t);
+
     RTC_ExitInitMode();
+
+    /* 等待日历寄存器同步完成 */
+    wait = 1000000;
+    while (wait-- && (RTC->ISR & RTC_ISR_RSF) == 0) { __NOP(); }
+
+    RTC_WPR_LOCK();
     PWR_BackupAccessCmd(DISABLE);
 }
 

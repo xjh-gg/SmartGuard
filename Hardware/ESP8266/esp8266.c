@@ -17,6 +17,8 @@
 
 #define U1_PRINTF  USART1_Printf   /* 方便切换到 USART2/其他串口调试 */
 
+static uint8_t  s_send_fail_count = 0;  /* 连续发送失败计数，用于健康检查 */
+
 /**
   * @brief  初始化 ESP8266 通信接口并连接 WiFi
   * @note   固定使用 USART3 115200 波特率；先测 AT、再连 WiFi、最后可选连 UDP
@@ -186,6 +188,7 @@ uint8_t ESP8266_SendUDP(uint8_t *data, uint16_t len)
     sprintf(cmd, "AT+CIPSEND=%d\r\n", len);
     if (!ESP8266_SendAT(cmd, ">", 1000))
     {
+        s_send_fail_count++;
         return 0;
     }
 
@@ -194,6 +197,7 @@ uint8_t ESP8266_SendUDP(uint8_t *data, uint16_t len)
         USART3_SendByte(data[i]);
     }
 
+    s_send_fail_count = 0;
     return 1;
 }
 
@@ -799,4 +803,39 @@ void ESP8266_SendData(const char *topic, const char *payload)
     {
         ESP8266_SendUDP((uint8_t *)json_buf, (uint16_t)len);
     }
+}
+
+/**
+  * @brief  ESP8266 健康检查与自动恢复
+  * @note   主循环每 5 分钟调用一次。
+  *         1) AT 无响应 → 复位 + 完整重连（WiFi + UDP）
+  *         2) AT 有响应但连续发送失败 → 仅重建 UDP 连接
+  *         3) 一切正常 → 不做任何操作
+  */
+uint8_t ESP8266_CheckHealth(void)
+{
+    /* 1. 轻量探测：发 AT，1s 内无响应认为模块挂死 */
+    if (!ESP8266_SendAT("AT\r\n", "OK", 1000))
+    {
+        U1_PRINTF("[ESP8266] no response, resetting...\r\n");
+        ESP8266_Reset();
+        if (!ESP8266_Init())
+        {
+            U1_PRINTF("[ESP8266] re-init FAIL\r\n");
+            return 0;
+        }
+        U1_PRINTF("[ESP8266] re-init OK\r\n");
+        s_send_fail_count = 0;
+        return 1;
+    }
+
+    /* 2. 模块活着但连续发送失败 → 重建 UDP 连接 */
+    if (s_send_fail_count >= 3)
+    {
+        U1_PRINTF("[ESP8266] %d send fails, reconnecting UDP...\r\n", s_send_fail_count);
+        ESP8266_ConnectUDP(ESP8266_UDP_SERVER_IP, ESP8266_UDP_SERVER_PORT);
+        s_send_fail_count = 0;
+    }
+
+    return 1;
 }

@@ -6,14 +6,15 @@
   *   ADC         — 光敏电阻 PF7/ADC3_IN5, 电位器 PA5/ADC1_IN5
   *   HCSR04      — Trig=PC8, Echo=PC6
   *   DHT11       — PG9 (一次读回 temp+humi)
-  *   MatrixKey   — COL: PB7/PA4/PG15/PC7, ROW: PC9/PB6/PE6/PA8
+  *   BoardKey    — S1=PA0, S2=PE2, S3=PE3, S4=PE4 (板载按键)
   *   LED         — PF9/PF10/PE13/PE14 (低电平亮), BEEP: PF8
   *   OLED SSD1306 — PB0=CLK PF11=MOSI PB1=DC PC13=CS1, CS2接VCC
   *   ESP8266     — USART3 PB10/PB11, 115200bps
   */
 
 /* ============ 编译开关（必须在 include 之前定义）============ */
-#define USE_MATRIX_KEY  1
+#define USE_MATRIX_KEY  0
+#define USE_BOARD_KEY   1
 #define USE_MPU6050     1   /* 0=未接 MPU6050  1=已接，启用 6 轴传感器 */
 
 /* ============ TinyML 数据采集 ============ */
@@ -28,7 +29,12 @@
 #include "adc.h"
 #include "hcsr04.h"
 #include "dht11.h"
+#if USE_MATRIX_KEY
 #include "matrix_key.h"
+#endif
+#if USE_BOARD_KEY
+#include "key.h"
+#endif
 #include "sensor_hub.h"
 #include "decision_engine.h"   /* 已经 include USE_OLED/USE_ESP8266 定义 */
 #include "adaptive_threshold.h"
@@ -77,6 +83,12 @@ static void Hardware_InitAll(void)
 #if USE_MATRIX_KEY
     USART1_SendString("[INIT] MatrixKey...");
     Matrix_Key_Init();
+    USART1_SendString("OK\r\n");
+#endif
+
+#if USE_BOARD_KEY
+    USART1_SendString("[INIT] BoardKey...");
+    KEY_Init();
     USART1_SendString("OK\r\n");
 #endif
 
@@ -188,6 +200,7 @@ static void SampleAllSensors(void)
     DHT11_Read_Data(&temp, &humi);
     g_sensor.temperature = temp;
     g_sensor.humidity    = humi;
+    g_sensor.mq2_adc     = ADC_ReadMQ2();
     g_sensor.tamper_flag = 0;
 
 #if USE_MPU6050
@@ -227,7 +240,7 @@ static void SampleAllSensors(void)
 #endif
 
     /* AT 基线更新 */
-    AT_Update(g_sensor.light_adc, 0, temp, humi);
+    AT_Update(g_sensor.light_adc, g_sensor.mq2_adc, temp, humi);
 }
 
 /* ============ 按键处理 ============ */
@@ -244,6 +257,29 @@ static void HandleMatrixKey(void)
         case 'D':
             g_manual_alert = ALERT_INTRUSION;
             g_last_alarm_tick = 0;   /* 强制立即发送 */
+            USART1_SendString("-> MANUAL ALERT TEST\r\n");
+            break;
+    }
+}
+#endif
+
+#if USE_BOARD_KEY
+static void HandleBoardKey(void)
+{
+    static uint8_t s_last_key = 0;
+    uint8_t key = KEY_Scan();
+
+    if (key == s_last_key) return;   /* 无变化，跳过 */
+    s_last_key = key;
+    if (key == 0) return;            /* 松开，不触发 */
+
+    switch (key) {
+        case S1: g_mode = MODE_HOME;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE HOME\r\n");  break;
+        case S2: g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE AWAY\r\n");  break;
+        case S3: g_mode = MODE_SLEEP; DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE SLEEP\r\n"); break;
+        case S4:
+            g_manual_alert = ALERT_INTRUSION;
+            g_last_alarm_tick = 0;
             USART1_SendString("-> MANUAL ALERT TEST\r\n");
             break;
     }
@@ -278,6 +314,13 @@ int main(void)
             USART1_Printf("[RTC] NTP synced: 20%02d-%02d-%02d %02d:%02d:%02d\r\n",
                           ntp_dt.Year, ntp_dt.Month, ntp_dt.Date,
                           ntp_dt.Hours, ntp_dt.Minutes, ntp_dt.Seconds);
+            {
+                RTC_DateTime_t verify;
+                SG_RTC_GetTime(&verify);
+                USART1_Printf("[RTC] read-back: 20%02d-%02d-%02d %02d:%02d:%02d\r\n",
+                              verify.Year, verify.Month, verify.Date,
+                              verify.Hours, verify.Minutes, verify.Seconds);
+            }
         } else {
             USART1_SendString("[RTC] NTP sync failed, use compile time\r\n");
         }
@@ -400,6 +443,13 @@ int main(void)
             }
         }
 
+        /* ============ ESP8266 网络健康检查：每 5 分钟 ============ */
+#if USE_ESP8266
+        if (loop_tick % 3000 == 0) {
+            ESP8266_CheckHealth();
+        }
+#endif
+
         /* ============ ML 数据采集：每 2s 输出 CSV 行 ============ */
 #if ML_DATA_COLLECT
         if (loop_tick % 20 == 0) {
@@ -455,6 +505,9 @@ int main(void)
 
 #if USE_MATRIX_KEY
         HandleMatrixKey();
+#endif
+#if USE_BOARD_KEY
+        HandleBoardKey();
 #endif
 
         /* 喂独立看门狗（2s 超时，主循环 100ms tick 足够） */
