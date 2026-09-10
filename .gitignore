@@ -75,3 +75,37 @@ serial_log*.txt
 
 # Runtime data
 alerts.json
+
+# 厂商参考目录（不参与项目，不入库）
+0.96寸OLED屏8脚白带字库ssd1306/
+05-课程代码/
+GY521mpu-6050资料-/
+STM32F407(黄色开发板)/
+esp32cam固件烧录教程/
+
+# AI 生成的界面效果图（不是真机照片）
+oled_dashboard.jpg
+oled_layout.jpg
+oled_minimal.jpg
+
+# 一次性调试产物
+User/build_result.txt
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# v1_train 与 Hardware/ML 重复的头文件（避免版本漂移）
+v1_train/ml_inference.h
+v1_train/scaler_params.h
+
+# 孤立的小程序配置文件（项目里没有小程序本体）
+project.config.json
+project.private.config.json
+
+# v1_train 数据快照，只留 combined + example
+v1_train/sensor_data.csv
+v1_train/sensor_data_backup.csv
+
+# 归档目录
+docs/logs/

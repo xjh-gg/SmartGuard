@@ -1,4 +1,4 @@
-﻿/**
+/**
   ******************************************************************************
   * @file    matrix_key.c
   * @brief   4x4 矩阵键盘驱动程序（列扫描方式，非阻塞状态机）
@@ -95,6 +95,7 @@ char Key_Scan(void)
 {
     static enum { KS_IDLE, KS_PRESSED } ks_state = KS_IDLE;
     static char ks_key = 0;
+#pragma diag_suppress 550
     static int  ks_row = 0, ks_col = 0;
     int col, row, i;
 

@@ -1,0 +1,39 @@
+============================================================
+ SmartGuard v1.0 训练报告 (sklearn MLP)
+============================================================
+
+数据: sensor_data_combined.csv  总样本: 485
+训练集: 388  测试集: 97
+
+模型: MLP (10→16→1, tanh/logistic)
+
+Accuracy=0.9381  Precision=0.8182
+Recall=1.0000  F1=0.9000
+
+混淆矩阵:
+[[64  6]
+ [ 0 27]]
+
+Scaler mean:
+  light: 1254.871134
+  dist: 173.469072
+  temp: 27.625876
+  humi: 44.609480
+  mq2: 0.000000
+  light_dev: 62.012887
+  dist_delta: 36.389175
+  temp_dev: -0.071134
+  humi_dev: -0.550928
+  mq2_dev: 0.000000
+
+Scaler std:
+  light: 149.488281
+  dist: 67.994895
+  temp: 0.676484
+  humi: 0.662109
+  mq2: 1.000000
+  light_dev: 144.045104
+  dist_delta: 73.201780
+  temp_dev: 0.095743
+  humi_dev: 0.447133
+  mq2_dev: 1.000000

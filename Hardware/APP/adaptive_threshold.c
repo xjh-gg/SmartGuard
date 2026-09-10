@@ -1,4 +1,4 @@
-﻿/**
+/**
   ******************************************************************************
   * @file    adaptive_threshold.c
   * @brief   自适应阈值模块实现
@@ -134,6 +134,13 @@ void AT_LearnBaseline(void)
     uint16_t calc = (uint16_t)(m_mq2 + AT_SIGMA_K * (float)s_bl.mq2_sigma);
     s_bl.mq2_fire_threshold = calc > 400 ? calc : 400;
 
+    /* MQ-2 基线异常高（> 2000）说明传感器未正常接入，
+       禁用火灾检测，避免自然波动触发误报 */
+    if (m_mq2 > 2000.0f) {
+        s_bl.mq2_fire_threshold = 0xFFFF;   /* 永不可达 */
+        USART1_Printf("[AT] WARN: MQ-2 baseline=%.0f too high, fire detection DISABLED\r\n", m_mq2);
+    }
+
     s_bl.is_learned = 1;
 
     USART1_Printf("[AT] 基线学习完成\r\n");
@@ -163,7 +170,10 @@ void AT_Update(uint16_t light, uint16_t mq2, float temp, float humi)
     /* 烟雾：偏离超过 2*sigma 不吸收（可能是真的烟雾） */
     if (fabsf(diff_mq2) < 2.0f * (float)s_bl.mq2_sigma) {
         s_bl.mq2_ewma   += AT_EWMA_ALPHA * diff_mq2;
-        s_bl.mq2_fire_threshold = (uint16_t)(s_bl.mq2_ewma + (float)AT_SIGMA_K * (float)s_bl.mq2_sigma);
+        /* 基线学习时已禁用（threshold=0xFFFF）时保持禁用，不要覆盖 */
+        if (s_bl.mq2_fire_threshold != 0xFFFF) {
+            s_bl.mq2_fire_threshold = (uint16_t)(s_bl.mq2_ewma + (float)AT_SIGMA_K * (float)s_bl.mq2_sigma);
+        }
     }
 
     /* 温湿度：偏离超过 3*sigma 不吸收 */
@@ -204,7 +214,7 @@ uint8_t AT_CheckIntrusion(const Sensor_Data_t *data, float dist_prev, float dist
 
     /* 距离从远突然变近：变化量 > delta，且当前距离很近 */
     float delta = dist_prev - dist_now;
-    if (delta > AT_DISTANCE_DELTA_CM && dist_now < 80.0f)
+    if (delta > AT_DISTANCE_DELTA_CM && dist_now < 120.0f)
     {
         return 1;
     }

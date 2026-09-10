@@ -1,4 +1,4 @@
-﻿/**
+/**
   ******************************************************************************
   * @file    decision_engine.c
   * @brief   决策引擎 v0.7 —— 规则优先 + AI 辅助（TinyML 可开关）
@@ -33,10 +33,11 @@
 static Guard_Mode_t s_mode        = MODE_HOME;
 static Alert_Type_t s_alert_last  = ALERT_NONE;
 static float        s_dist_prev    = 0.0f;
+static uint8_t      s_intrusion_hit = 0;   /* 连续命中计数：单次误报会被过滤 */
 
 /* ========== 固定阈值兜底 ========== */
 #define INTRUSION_DIST_HARD    40.0f    /* 硬阈值：<40cm 直接告警，不经过 AI */
-#define INTRUSION_DIST_SOFT    80.0f    /* 软阈值：40-80cm 交给 AI 辅助判断 */
+#define INTRUSION_DIST_SOFT    120.0f   /* 软阈值：40-120cm 交给 AI 辅助判断 */
 #define INTRUSION_DELTA_CM     20.0f    /* 距离突变兜底 */
 
 void DecisionEngine_Init(void)
@@ -84,54 +85,74 @@ Guard_Mode_t DecisionEngine_GetMode(void)
   */
 static Alert_Type_t CheckIntrusion(const Sensor_Data_t *data)
 {
-    if (s_mode == MODE_HOME) return ALERT_NONE;
-    if (data->distance <= 0.0f) return ALERT_NONE;
+    Alert_Type_t raw = ALERT_NONE;
 
-    /* ===== 1. AT 自适应阈值（硬触发） ===== */
+    if (s_mode == MODE_HOME) return ALERT_NONE;
+    if (data->distance <= 0.0f) {
+        /* 无效读数也衰减 hit，防止传感器故障导致告警永久挂起 */
+        if (s_intrusion_hit > 0) s_intrusion_hit--;
+        return ALERT_NONE;
+    }
+
+    /* ===== 1. AT 自适应阈值 ===== */
     const AT_Baseline_t *bl = AT_GetBaseline();
     if (bl && bl->is_learned)
     {
         if (AT_CheckIntrusion(data, s_dist_prev, data->distance))
         {
-            return ALERT_INTRUSION;
+            raw = ALERT_INTRUSION;
         }
     }
 
     float delta = s_dist_prev - data->distance;
 
-    /* ===== 2. 硬阈值（直接过，不调 AI） ===== */
-    if (data->distance < INTRUSION_DIST_HARD)
+    /* ===== 2. 硬阈值 ===== */
+    if (raw == ALERT_NONE && data->distance < INTRUSION_DIST_HARD)
     {
-        return ALERT_INTRUSION;
+        raw = ALERT_INTRUSION;
     }
 
-    /* ===== 3. 边界地带（40-80cm）→ AI 辅助 ===== */
-    if (data->distance < INTRUSION_DIST_SOFT)
+    /* ===== 3. 边界地带 → AI 辅助 ===== */
+    if (raw == ALERT_NONE && data->distance < INTRUSION_DIST_SOFT)
     {
 #if defined(USE_ML) && USE_ML
         {
             float x_raw[4]  = { (float)data->light_adc, data->distance, data->temperature, data->humidity };
             float baseline[4];
-            const AT_Baseline_t *bl = AT_GetBaseline();
             baseline[0] = bl && bl->is_learned ? bl->light_ewma  : 1200.0f;
-            baseline[1] = bl && bl->is_learned ? 0.0f            : 208.0f;  /* distance ewma 没存，用中位数 */
+            baseline[1] = bl && bl->is_learned ? 0.0f            : 208.0f;
             baseline[2] = bl && bl->is_learned ? bl->temp_ewma   : 29.0f;
             baseline[3] = bl && bl->is_learned ? bl->humi_ewma   : 44.0f;
             uint8_t pred = ml_predict(x_raw, baseline, SCALER_MEAN, SCALER_SCALE);
             if (pred) {
                 USART1_Printf("[AI] ML=INTRUSION dist=%.1fcm\r\n", data->distance);
-                return ALERT_INTRUSION;
+                raw = ALERT_INTRUSION;
             }
         }
 #endif
     }
 
     /* ===== 4. 兜底：距离突变 ===== */
-    if (delta > INTRUSION_DELTA_CM && data->distance < 80.0f)
+    if (raw == ALERT_NONE && delta > INTRUSION_DELTA_CM && data->distance < INTRUSION_DIST_SOFT)
     {
-        return ALERT_INTRUSION;
+        raw = ALERT_INTRUSION;
     }
 
+    /* ===== 连续确认：3 次命中才触发，单次误报过滤 ===== */
+    if (raw == ALERT_INTRUSION) {
+        if (s_intrusion_hit < 5) s_intrusion_hit++;
+    } else if (data->distance > INTRUSION_DIST_SOFT) {
+        /* 只有真正远离（> 120cm）才衰减 hit；
+           软地带（40-120cm）的 OK 不清零，
+           防止 ML 误判打断 hit 累积 */
+        if (s_intrusion_hit > 0) s_intrusion_hit--;
+    }
+    /* 软地带 OK 时 hit 保持不变 */
+
+    if (s_intrusion_hit >= 3) {
+        s_intrusion_hit = 0;   /* 触发后清零，下次重新累积 */
+        return ALERT_INTRUSION;
+    }
     return ALERT_NONE;
 }
 

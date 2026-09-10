@@ -1,4 +1,4 @@
-﻿/**
+/**
   ******************************************************************************
   * @file    adc.c
   * @brief   ADC 多通道采样驱动实现
@@ -40,7 +40,7 @@ static void ADC_GPIO_Init(void)
     GPIO_Init(LIGHT_GPIO_PORT, &GPIO_InitStructure);
 
 #if USE_MQ2
-    /* PA6 MQ-2 烟雾模拟输入（USE_MQ2=1 时启用，MQ2 与电位器共用 ADC1） */
+    /* PA4 MQ-2 烟雾模拟输入（USE_MQ2=1 时启用，MQ2 与电位器共用 ADC1） */
     GPIO_InitStructure.GPIO_Pin = MQ2_GPIO_PIN;
     GPIO_Init(MQ2_GPIO_PORT, &GPIO_InitStructure);
 #endif
@@ -129,7 +129,7 @@ uint16_t ADC_ReadPhotoresistor(void)
 }
 
 /**
-  * @brief  读取 MQ-2 烟雾传感器 ADC 值（PA6 / ADC1_IN6）
+  * @brief  读取 MQ-2 烟雾传感器 ADC 值（PA4 / ADC1_IN4）
   * @note   由 adc.h 的 USE_MQ2 控制：未接线时恒返回 0，
   *         DecisionEngine 的 CheckFire 见到 0 会自动跳过火灾判断。
   */

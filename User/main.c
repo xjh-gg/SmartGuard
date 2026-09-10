@@ -1,4 +1,4 @@
-﻿/**
+/**
   * @file    main.c
   * @brief   SmartGuard v0.4 — 智能空间守护 Agent
   *
@@ -16,6 +16,7 @@
 #define USE_MATRIX_KEY  0
 #define USE_BOARD_KEY   1
 #define USE_MPU6050     1   /* 0=未接 MPU6050  1=已接，启用 6 轴传感器 */
+
 
 /* ============ TinyML 数据采集 ============ */
 /* 1=每 2s 输出 CSV 行到串口 + ESP8266 UDP，用于后期训练 sklearn MLP */
@@ -58,12 +59,60 @@
 #include "mpu6050.h"
 #endif
 
-/* ============ 全局状态 ============ */
+    /* ========== 假数据测试模式（测试用，测完请改 TEST_FAKE_INPUT 为 0） ========== */
+    #define TEST_FAKE_INPUT      0
+
+    #if TEST_FAKE_INPUT
+    static const float s_fake_dist_quiet[] = {
+        250,250,250, 248,248,248, 252,252,252,
+        249,249,249, 251,251,251, 250,250,250,
+        50,50,50,
+        250,250,250,
+        137,137,137,
+        250,250,250,
+        52,52,52,
+        250,250,250
+    };
+
+    static const float s_fake_dist_intrude[] = {
+        245,245,245, 245,245,245,
+        14,14,14,
+        56,56,56,
+        24,24,24,
+        56,56,56,
+        12,12,12
+    };
+
+    static const float *s_fake_seq = s_fake_dist_intrude;
+    static uint8_t s_fake_seq_len =
+        sizeof(s_fake_dist_intrude) / sizeof(s_fake_dist_intrude[0]);
+    static uint8_t s_fake_idx = 0;
+
+    void Test_SwitchSeq(uint8_t which)
+    {
+        if (which == 1) {
+            s_fake_seq = s_fake_dist_quiet;
+            s_fake_seq_len = sizeof(s_fake_dist_quiet) / sizeof(s_fake_dist_quiet[0]);
+        } else if (which == 2) {
+            s_fake_seq = s_fake_dist_intrude;
+            s_fake_seq_len = sizeof(s_fake_dist_intrude) / sizeof(s_fake_dist_intrude[0]);
+        }
+        s_fake_idx = 0;
+    }
+    #endif
+
+    /* ============ 全局状态 ============ */
 static Sensor_Data_t g_sensor;
 static Guard_Mode_t  g_mode    = MODE_AWAY;   /* 默认离家模式：入侵检测开启 */
 static Alert_Type_t  g_alert   = ALERT_NONE;
 static Alert_Type_t  g_manual_alert = ALERT_NONE;  /* 按键手动触发的测试告警 */
 static uint32_t      g_last_alarm_tick = 0;
+
+#if USE_OLED
+static char          s_time_buf[10] = "00:00:00";   /* 当前时间，OLED 状态栏用 */
+static const char   *s_wifi_status  = "N ";         /* 默认无 WiFi 图标 */
+static uint8_t       s_cam_ok       = 0;            /* ESP32-CAM 拍照结果 */
+#endif
 
 /* MPU6050 零偏校准值（初始化时学习） */
 static float   s_gyro_zero_gx = 0.0f;
@@ -96,21 +145,24 @@ static void Hardware_InitAll(void)
     USART1_SendString("[INIT] OLED SSD1306...");
     OLED_Init();
     USART1_SendString("OK\r\n");
-    OLED_ShowString(0, 0, "SmartGuard v0.4");
-    OLED_ShowString(0, 2, "Booting...");
+    OLED_ShowBootProgress(10, "Loading...");
 #endif
 
 #if USE_ESP8266
     USART1_SendString("[INIT] ESP8266 WiFi...");
+    OLED_ShowBootProgress(30, "WiFi Connecting...");
     if (ESP8266_Init()) {
         USART1_SendString("OK\r\n");
+        OLED_ShowBootProgress(50, "WiFi OK");
     } else {
         USART1_SendString("FAIL (no WiFi)\r\n");
+        OLED_ShowBootProgress(50, "WiFi OFFLINE");
     }
 #endif
 
 #if USE_ESP32_CAM
     USART1_SendString("[INIT] ESP32-CAM...");
+    OLED_ShowBootProgress(55, "ESP32-CAM...");
     if (ESP32CAM_Init()) {
         USART1_SendString("OK (online)\r\n");
     } else {
@@ -120,6 +172,7 @@ static void Hardware_InitAll(void)
 
 #if USE_RTC
     USART1_SendString("[INIT] RTC Calendar...");
+    OLED_ShowBootProgress(60, "RTC Init...");
     SG_RTC_Init();
     USART1_SendString("OK\r\n");
     /* Wakeup Timer 中断不启用（硬件 INITF 异常），秒刷新由主循环轮询完成 */
@@ -127,6 +180,7 @@ static void Hardware_InitAll(void)
 
 #if USE_MPU6050
     USART1_SendString("[INIT] MPU6050...");
+    OLED_ShowBootProgress(65, "Calibrating...");
     {
         uint8_t mpu_id = MPU6050_Init();
         if (mpu_id == 0) {
@@ -146,6 +200,9 @@ static void Hardware_InitAll(void)
                         USART1_Printf("[MPU6050] sample[%u] raw: ax=%d ay=%d az=%d | phys: ax=%.3f ay=%.3f az=%.3f\r\n",
                                       k, rax, ray, raz, ax, ay, az);
                     }
+                    if (k == 25) {
+                        OLED_ShowBootProgress(75, "Calibrating...");
+                    }
                     delay_ms(10);
                 }
                 s_gyro_zero_gx = sgx / 50.0f;
@@ -159,6 +216,11 @@ static void Hardware_InitAll(void)
             USART1_Printf("FAIL WHO_AM_I=0x%02X (期望0x68)\r\n", mpu_id);
         }
     }
+#endif
+
+#if USE_OLED
+    OLED_ShowBootProgress(100, "System Ready");
+    delay_ms(800);
 #endif
 }
 
@@ -188,13 +250,25 @@ static void SampleAllSensors(void)
     /* 光敏 + 距离各采 3 次取中值，抑制毛刺 */
     for (i = 0; i < 3; i++) {
         light_raw[i] = ADC_ReadPhotoresistor();
+#if TEST_FAKE_INPUT
+        /* 假数据模式：从预定义序列取值 */
+        dist_raw[i] = s_fake_seq[s_fake_idx];
+        s_fake_idx = (s_fake_idx + 1) % s_fake_seq_len;
+        delay_ms(30);   /* 保留节奏，不需要物理 60ms 等待 */
+#else
         dist_raw[i]  = HCSR04_GetDistance();
+        /* 异常值剔除：< 2cm 或 > 400cm 视为无效 */
+        if (dist_raw[i] < 2.0f || dist_raw[i] > 400.0f) {
+            dist_raw[i] = 0.0f;
+        }
         if (i < 2) delay_ms(30);   /* HC-SR04 需要 ≥60ms 测量周期 */
+#endif
     }
     g_sensor.light_adc = median3_u16(light_raw[0], light_raw[1], light_raw[2]);
     {
         float dm = median3_f(dist_raw[0], dist_raw[1], dist_raw[2]);
-        g_sensor.distance = (dm > 0.0f) ? dm : dist_raw[0];  /* 全失败保留首次值 */
+        /* 3 次都无效 → 沿用上次值（不返回 0） */
+        g_sensor.distance = (dm > 0.0f) ? dm : g_sensor.distance;
     }
 
     DHT11_Read_Data(&temp, &humi);
@@ -283,6 +357,13 @@ static void HandleBoardKey(void)
             USART1_SendString("-> MANUAL ALERT TEST\r\n");
             break;
     }
+
+#if USE_OLED
+    /* 按键后立即刷新 OLED 模式行，避免等 1 秒 tick (告警页时不覆盖) */
+    if (g_alert == ALERT_NONE) {
+        OLED_ShowMode(g_mode);
+    }
+#endif
 }
 #endif
 
@@ -423,6 +504,9 @@ int main(void)
                         if (effective == ALERT_INTRUSION) {
                             char cam_url[96];
                             ESP32CAM_Status_t cam_st = ESP32CAM_TriggerCapture(cam_url, sizeof(cam_url));
+#if USE_OLED
+                            s_cam_ok = (cam_st == CAM_OK) ? 1 : 0;
+#endif
                             if (cam_st == CAM_OK) {
                                 USART1_Printf("[ESP32-CAM] photo: %s\r\n", cam_url);
                             } else if (cam_st == CAM_OFFLINE) {
@@ -475,31 +559,26 @@ int main(void)
         }
 #endif
 
-        /* OLED 每秒刷新 + 告警闪烁 */
-#if USE_OLED
+        /* ★ RTC 秒刷新 + OLED 每秒刷新 (每 10 tick = 1 秒)
+         * 不再依赖 RTC Wakeup 中断，改为直接读 RTC 日历时间 */
+#if USE_RTC
         if (loop_tick % 10 == 0) {
-            if (g_alert != ALERT_NONE && (loop_tick / 10) % 2 == 1) {
-                /* 告警闪烁：同时清 page 6 和 page 7 (8x16 字体占 2 页) */
-                OLED_ClearArea(0, 6, 128);
-                OLED_ClearArea(0, 7, 128);
-            } else {
-                OLED_ShowHomeScreen(&g_sensor, g_mode, g_alert);
-            }
+            SG_RTC_FormatTime(s_time_buf, sizeof(s_time_buf));
+            USART1_Printf("[RTC] %s\r\n", s_time_buf);
         }
 #endif
 
-        /* ★ RTC 秒刷新 —— 主循环轮询 (每 10 tick = 1 秒)
-         * 不再依赖 RTC Wakeup 中断（硬件 INITF 反复进入 Init Mode 导致中断不触发）
-         * 改为直接读 RTC 日历时间，稳定可靠 */
-#if USE_RTC
-        if (loop_tick % 10 == 0) {
-            char time_buf[10];
-            SG_RTC_FormatTime(time_buf, sizeof(time_buf));
-            USART1_Printf("[RTC] %s\r\n", time_buf);
 #if USE_OLED
-            OLED_ClearArea(40, 0, 72);
-            OLED_ShowString(40, 0, time_buf);
+        if (loop_tick % 10 == 0) {
+#if USE_ESP8266
+            s_wifi_status = ESP8266_IsWiFiOk() ? "W+" : "W-";
 #endif
+            if (g_alert != ALERT_NONE) {
+                OLED_ShowAlertPage(&g_sensor, g_alert, s_time_buf, s_cam_ok);
+            } else {
+                OLED_ShowStatusBar(g_mode, s_time_buf, s_wifi_status);
+                OLED_ShowHomeScreen(&g_sensor, g_mode, ALERT_NONE);
+            }
         }
 #endif
 

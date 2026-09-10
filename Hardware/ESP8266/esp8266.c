@@ -1,4 +1,4 @@
-﻿/**
+/**
   ******************************************************************************
   * @file    esp8266.c
   * @brief   ESP8266 WiFi 模块驱动实现（UDP 数据上报）
@@ -18,6 +18,7 @@
 #define U1_PRINTF  USART1_Printf   /* 方便切换到 USART2/其他串口调试 */
 
 static uint8_t  s_send_fail_count = 0;  /* 连续发送失败计数，用于健康检查 */
+static volatile uint8_t s_wifi_ok = 0;  /* WiFi 连接状态，供 OLED 状态栏读取 */
 
 /**
   * @brief  初始化 ESP8266 通信接口并连接 WiFi
@@ -35,6 +36,7 @@ uint8_t ESP8266_Init(void)
         ESP8266_Reset();
         if (!ESP8266_SendAT("AT\r\n", "OK", 1000))
         {
+            s_wifi_ok = 0;
             return 0;   /* ESP8266 彻底没反应 */
         }
     }
@@ -140,11 +142,27 @@ uint8_t ESP8266_ConnectAP(char *ssid, char *password)
 
     if (!ESP8266_SetMode(1))
     {
+        s_wifi_ok = 0;
         return 0;
     }
 
     sprintf(cmd, "AT+CWJAP_CUR=\"%s\",\"%s\"\r\n", ssid, password);
-    return ESP8266_SendAT(cmd, "OK", 15000);   /* 连接热点可能需要较长时间 */
+    if (ESP8266_SendAT(cmd, "OK", 15000))
+    {
+        s_wifi_ok = 1;
+        return 1;
+    }
+    s_wifi_ok = 0;
+    return 0;
+}
+
+/**
+  * @brief  查询 WiFi 是否在线（供 OLED 状态栏等只读使用）
+  * @retval 1=在线，0=掉线
+  */
+uint8_t ESP8266_IsWiFiOk(void)
+{
+    return s_wifi_ok;
 }
 
 /**
