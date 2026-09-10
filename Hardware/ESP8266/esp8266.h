@@ -60,5 +60,6 @@ uint8_t ESP8266_GetHTTPTime(RTC_DateTime_t *dt);       /* HTTP 方式获取网�
 uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt);        /* NTP/UDP 方式获取网络时间（UTC+8） */
 uint8_t ESP8266_CheckInternet(void);
 uint8_t ESP8266_CheckHealth(void);
+uint8_t ESP8266_IsWiFiOk(void);        /* 返回 WiFi 连接状态，供 OLED 状态栏使用 */
 
 #endif /* __ESP8266_H__ */

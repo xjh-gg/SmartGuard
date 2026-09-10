@@ -1,4 +1,4 @@
-﻿/**
+/**
   ******************************************************************************
   * @file    oled.c
   * @brief   0.96寸 OLED SSD1306 SPI 驱动（软件模拟 SPI）
@@ -97,7 +97,7 @@ static void OLED_ShowChar_raw(uint8_t x, uint8_t y, uint8_t chr)
         OLED_WR_Byte(F8X16[c * 16 + i + 8], OLED_DATA);
 }
 
-void OLED_ShowString(uint8_t x, uint8_t y, char *str)
+void OLED_ShowString(uint8_t x, uint8_t y, const char *str)
 {
     uint8_t j = 0;
     while (str[j] != '\0')
@@ -188,7 +188,76 @@ void OLED_ShowIcon8x8(uint8_t x, uint8_t page, const uint8_t *icon)
         OLED_WR_Byte(icon[i], OLED_DATA);
 }
 
+/* ============ 显示 16x16 汉字 (Hzk[] 已是 SSD1306 Page 友好格式，直接写) ============
+   Hzk 格式: 每字 32 字节
+     Hzk[no][0..15]  = page 0 (上半页 8 行) 的 16 列
+     Hzk[no][16..31] = page 1 (下半页 8 行) 的 16 列
+   每字节 = 一列中 8 个垂直像素, bit0=顶行, bit7=底行
+   与 SSD1306 page 格式完全一致，无需转置
+   （厂商字库是 [N*2][16] 结构，我们重排成 [N][32]，数据布局不变） */
+void OLED_ShowChinese(uint8_t x, uint8_t y, uint8_t no)
+{
+    uint8_t t;
+
+    /* 标准 16x16 渲染（Hzk[][32]：前 16 字节=上半页，后 16 字节=下半页） */
+    OLED_Set_Pos(x, y);
+    for (t = 0; t < 16; t++)
+        OLED_WR_Byte(Hzk[no][t], OLED_DATA);
+
+    OLED_Set_Pos(x, y + 1);   /* 切到下半页 */
+    for (t = 0; t < 16; t++)
+        OLED_WR_Byte(Hzk[no][16 + t], OLED_DATA);
+}
+
+/* ============ 汉字索引（与 oledfont.h 的 Hzk[] 内容严格对应） ============
+   Hzk[0..6]  中景园电子科技  卖家例程原始字模，SmartGuard 未使用
+   Hzk[7..28] tools/gen_chinese_font.py 取模所得 22 字
+   注意：取模串里「度」出现三次，Hzk[10]、Hzk[12]、Hzk[14] 均为「度」，
+   所以从「空」起下标比字面顺序大 1。改动字库后必须重跑
+   tools/check_oled_font.py 校验，不要凭顺序推算下标。 */
+#define HZ_GUANG    7   /* 光 */
+#define HZ_ZHAO     8   /* 照 */
+#define HZ_WEN      9   /* 温 */
+#define HZ_DU      10   /* 度 */
+#define HZ_SHI     11   /* 湿 */
+#define HZ_KONG    13   /* 空 (Hzk[12] 是重复的「度」占位) */
+#define HZ_QI      14   /* 气 */
+#define HZ_LIANG   15   /* 良 */
+#define HZ_HAO     16   /* 好 */
+#define HZ_ZHONG   17   /* 中 */
+#define HZ_CHA     18   /* 差 */
+#define HZ_XUN     19   /* 巡 */
+#define HZ_LUO     20   /* 逻 */
+#define HZ_RU      21   /* 入 */
+#define HZ_HUO     22   /* 火 */
+#define HZ_ZAI     23   /* 灾 */
+#define HZ_GAO     24   /* 告 */
+#define HZ_JING    25   /* 警 */
+#define HZ_BEI     26   /* 备 */
+#define HZ_CHAI    27   /* 拆 */
+#define HZ_QIAN    28   /* 前 */
+
+/* ============ 辅助: 光照 ADC → 百分比 ============ */
+static uint8_t light_to_pct(uint16_t adc)
+{
+    int pct;
+    if (adc >= 4000) return 0;
+    if (adc <= 200)  return 100;
+    pct = (int)(100 - ((unsigned long)(adc - 200) * 100 / 3800));
+    return (uint8_t)pct;
+}
+
+/* ============ 辅助: MQ-2 ADC → 空气质量英文 ============ */
+static const char *air_quality_str(uint16_t adc)
+{
+    if (adc < 1000) return "GOOD";
+    if (adc < 2000) return "MID";
+    return "BAD";
+}
+
 /* ============ 8x8 小图标数据 (SSD1306 page 模式: 8字节=8列, bit0=top) ============ */
+#pragma diag_suppress 177  /* 9 个 8x8 图标保留待 UI 使用 */
+/* ============ 8x8 小图标数据 ============ */
 static const uint8_t icon_light[8]  = {0x00, 0x0C, 0x5E, 0x7F, 0x7F, 0x5E, 0x0C, 0x00}; /* 💡灯泡 */
 static const uint8_t icon_dist[8]   = {0x18, 0x24, 0x42, 0x99, 0x99, 0x42, 0x24, 0x18}; /* 📡超声 */
 static const uint8_t icon_temp[8]  = {0x00, 0x40, 0xFF, 0xFF, 0xF0, 0xE0, 0xE0, 0x00}; /* 🌡温度 */
@@ -198,6 +267,7 @@ static const uint8_t icon_person[8] = {0x80, 0x48, 0x2C, 0x7F, 0x7F, 0x2C, 0x48,
 static const uint8_t icon_moon[8]   = {0x3C, 0x7E, 0xFF, 0xE7, 0xC3, 0x42, 0x00, 0x00}; /* 🌙月亮 */
 static const uint8_t icon_warn[8]   = {0x10, 0x18, 0x1C, 0x1E, 0xFF, 0xFD, 0x18, 0x10}; /* ⚠警告 */
 static const uint8_t icon_ok[8]     = {0x40, 0x60, 0x30, 0x18, 0x0C, 0x00, 0x00, 0x00}; /* ✓对勾 */
+#pragma diag_default 177
 
 /* ============ OLED 初始化 ============ */
 void OLED_Init(void)
@@ -277,72 +347,130 @@ void OLED_Init(void)
    │ Status: OK  /  !! INTRUSION !!  │  page 6 : 告警
    └─────────────────────────────────┘
 */
-void OLED_ShowHomeScreen(Sensor_Data_t *data, Guard_Mode_t mode, Alert_Type_t alert)
+
+void OLED_ShowMode(Guard_Mode_t mode)
 {
-    char buf[20];
+    const char *mode_str;
 
-    /* ============ 每行画之前先清除对应 page ============ */
+    OLED_ClearArea(0, 0, 40);
+    OLED_ClearArea(0, 1, 40);
 
-    /* 行 0: 模式 + AI 状态 (page 0 和 page 1, 宽度 128) */
+    switch (mode) {
+        case MODE_HOME:  mode_str = "HOME";  break;
+        case MODE_AWAY:  mode_str = "AWAY";  break;
+        case MODE_SLEEP: mode_str = "SLEEP"; break;
+        default:         mode_str = "???";   break;
+    }
+    OLED_ShowString(0, 0, mode_str);
+}
+
+void OLED_ShowStatusBar(Guard_Mode_t mode, const char *time_str, const char *wifi_status)
+{
     OLED_ClearArea(0, 0, 128);
     OLED_ClearArea(0, 1, 128);
 
-    switch (mode) {
-        case MODE_HOME:  OLED_ShowString(0, 0, "HOME");  break;
-        case MODE_AWAY:  OLED_ShowString(0, 0, "AWAY");  break;
-        case MODE_SLEEP: OLED_ShowString(0, 0, "SLEEP"); break;
-        default:         OLED_ShowString(0, 0, "???");   break;
-    }
+    OLED_ShowMode(mode);
+    OLED_ShowString(48, 0, time_str);
+    OLED_ShowString(112, 0, wifi_status);
+}
 
-#if defined(USE_ML) && USE_ML
-    OLED_ShowString(64, 0, "AI:ON");
-#else
-    OLED_ShowString(64, 0, "AI:OFF");
-#endif
+void OLED_ShowHomeScreen(Sensor_Data_t *data, Guard_Mode_t mode, Alert_Type_t alert)
+{
+    char buf[32];
+    uint8_t lpct = light_to_pct(data->light_adc);
 
-    /* 行 2: 光照 + 距离 */
+    /* 行 2-3: LUX XX%  TEMP XXC */
     OLED_ClearArea(0, 2, 128);
     OLED_ClearArea(0, 3, 128);
+    OLED_ShowString(0, 2, "LUX");
+    snprintf(buf, sizeof(buf), "%u%%", lpct);
+    OLED_ShowString(24, 2, buf);
+    OLED_ShowString(56, 2, "TEMP");
+    snprintf(buf, sizeof(buf), "%dC", (int)data->temperature);
+    OLED_ShowString(88, 2, buf);
 
-    snprintf(buf, sizeof(buf), "L:%d", data->light_adc);
-    OLED_ShowString(0, 2, buf);
-
-    snprintf(buf, sizeof(buf), "D:%.1fcm", data->distance);
-    OLED_ShowString(64, 2, buf);
-
-    /* 行 4: 温度 + 湿度 */
+    /* 行 4-5: HUMI XX%  AIR XXXX */
     OLED_ClearArea(0, 4, 128);
     OLED_ClearArea(0, 5, 128);
+    OLED_ShowString(0, 4, "HUMI");
+    snprintf(buf, sizeof(buf), "%u%%", (uint8_t)data->humidity);
+    OLED_ShowString(32, 4, buf);
+    OLED_ShowString(72, 4, "AIR");
+    OLED_ShowString(96, 4, air_quality_str(data->mq2_adc));
 
-    snprintf(buf, sizeof(buf), "T:%.1fC", data->temperature);
-    OLED_ShowString(0, 4, buf);
-
-    snprintf(buf, sizeof(buf), "H:%.1f%%", data->humidity);
-    OLED_ShowString(64, 4, buf);
-
-    /* 行 6: 状态 */
+    /* 行 6-7: 模式 + 状态 */
     OLED_ClearArea(0, 6, 128);
     OLED_ClearArea(0, 7, 128);
-
-    if (alert != ALERT_NONE) {
-        switch (alert) {
-            case ALERT_INTRUSION:
-                OLED_ShowString(0, 6, "!! INTRUSION !!");
-                break;
-            case ALERT_FIRE:
-                OLED_ShowString(0, 6, "!! FIRE ALERT !!");
-                break;
-            case ALERT_ENV_ABNORMAL:
-                OLED_ShowString(0, 6, "!! ENV WARN !!");
-                break;
-            case ALERT_TAMPER:
-                OLED_ShowString(0, 6, "!! TAMPER !!");
-                break;
-            default:
-                OLED_ShowString(0, 6, "!! ALERT !!");
-                break;
-        }
-    } else {
-        OLED_ShowString(0, 6, "Status: OK");
+    switch (mode) {
+        case MODE_HOME:  OLED_ShowString(0, 6, "HOME");  break;
+        case MODE_AWAY:  OLED_ShowString(0, 6, "AWAY");  break;
+        case MODE_SLEEP: OLED_ShowString(0, 6, "SLEEP"); break;
+        default:         OLED_ShowString(0, 6, "???");   break;
     }
+    if (alert != ALERT_NONE) {
+        OLED_ShowString(72, 6, "ALERT!");
+    } else {
+        OLED_ShowString(80, 6, "PATROL");
+    }
+}
+
+void OLED_ShowAlertPage(Sensor_Data_t *data, Alert_Type_t alert, const char *time_str, uint8_t cam_ok)
+{
+    char buf[32];
+
+    OLED_ClearArea(0, 0, 128); OLED_ClearArea(0, 1, 128);
+    OLED_ClearArea(0, 2, 128); OLED_ClearArea(0, 3, 128);
+    OLED_ClearArea(0, 4, 128); OLED_ClearArea(0, 5, 128);
+    OLED_ClearArea(0, 6, 128); OLED_ClearArea(0, 7, 128);
+
+    switch (alert) {
+        case ALERT_INTRUSION:
+            OLED_ShowString(32, 0, "!! ALERT !!");
+            snprintf(buf, sizeof(buf), "D:%.1fcm", data->distance);
+            OLED_ShowString(0, 2, buf);
+            OLED_ShowString(0, 4, cam_ok ? "CAM: OK" : "CAM: --");
+            break;
+        case ALERT_FIRE:
+            OLED_ShowString(24, 0, "FIRE ALARM");
+            snprintf(buf, sizeof(buf), "MQ2:%d", data->mq2_adc);
+            OLED_ShowString(0, 2, buf);
+            snprintf(buf, sizeof(buf), "T:%.0fC", data->temperature);
+            OLED_ShowString(0, 4, buf);
+            break;
+        case ALERT_ENV_ABNORMAL:
+            OLED_ShowString(36, 0, "AIR BAD");
+            snprintf(buf, sizeof(buf), "MQ2:%d", data->mq2_adc);
+            OLED_ShowString(0, 2, buf);
+            break;
+        case ALERT_TAMPER:
+            OLED_ShowString(40, 0, "TAMPER");
+            OLED_ShowString(0, 2, "CHECK!");
+            break;
+        default:
+            OLED_ShowString(32, 0, "!! ALERT !!");
+            break;
+    }
+
+    OLED_ShowString(40, 6, time_str);
+}
+
+void OLED_ShowBootProgress(uint8_t percent, const char *status)
+{
+    char bar[16];
+    uint8_t filled, i;
+
+    if (percent > 100) percent = 100;
+    filled = percent / 10;
+
+    bar[0] = '[';
+    for (i = 0; i < 10; i++) {
+        bar[1 + i] = (i < filled) ? '=' : ' ';
+    }
+    bar[11] = ']';
+    snprintf(bar + 12, 4, "%-3u", (unsigned)percent);
+    bar[15] = '\0';
+
+    OLED_ShowString(0, 0, "SmartGuard v0.4");
+    OLED_ShowString(0, 3, bar);
+    OLED_ShowString(0, 5, status);
 }
