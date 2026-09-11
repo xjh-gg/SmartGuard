@@ -175,8 +175,20 @@ uint8_t ESP8266_SendAT(char *cmd, char *ack, uint16_t timeout_ms)
   */
 void ESP8266_Reset(void)
 {
+    uint8_t i;
+
     ESP8266_SendAT("AT+RST\r\n", "ready", 3000);
-    delay_ms(2000);   /* 复位后需要等待启动完成 */
+
+    /* 复位后需要等待启动完成。必须分段喂狗：IWDG 超时正好是 2000ms，
+       整段 delay_ms(2000) 零余量零喂狗。冷启动时无害（IWDG_Init 在
+       基线学习之后才执行），但 IWDG 一旦启动只能靠掉电关闭，热复位
+       （RESET 键 / 重新烧录不断电）后它仍在跑，这 2 秒必然被咬死，
+       于是每次热复位都变成开机死循环（实测：+0.41/+2.40/+4.38s 三条 banner）。 */
+    for (i = 0; i < 20; i++)
+    {
+        delay_ms(100);
+        IWDG_Feed();
+    }
 }
 
 /**
