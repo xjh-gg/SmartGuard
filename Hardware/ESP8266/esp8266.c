@@ -25,6 +25,11 @@ static uint8_t  s_send_fail_count = 0;  /* 连续发送失败计数，用于健�
 static volatile uint8_t s_wifi_ok = 0;  /* WiFi 连接状态，供 OLED 状态栏读取 */
 static uint8_t  s_mqtt_ok = 0;          /* MQTT 握手完成标志（CONNECT+SUBSCRIBE 都成功） */
 
+/* 下行 +IPD 帧解析器的字节入口，本体在文件末尾的 MQTT 区。
+   提前声明是因为 ESP8266_SendTCP() 发送前也要调它，把已到达的下行帧
+   喂进解析器而不是直接丢弃。 */
+static void MQTT_FeedByte(uint8_t ch);
+
 /**
   * @brief  初始化 ESP8266 通信接口并连接 WiFi
   * @note   先 115200 波特率探测，失败则降级 9600；再测 AT、连 WiFi、可选连 UDP
@@ -427,7 +432,10 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
     uint8_t need_reconnect = 0;
 
     sprintf(cmd, "AT+CIPSEND=%d\r\n", len);
-    while (USART3_GetByte(&ch)) { }   /* 清掉连接状态残留 */
+    /* 发送前清空环形缓冲。不能直接丢：遥测每 10s 发一次，若下行命令正好
+       落在这个窗口里就会被吞掉，连日志都不留。改为喂给 +IPD 分帧器，
+       FeedByte 只暂存命令、不回调，因此不会与本次发送形成重入。 */
+    while (USART3_GetByte(&ch)) MQTT_FeedByte(ch);
 
     if (!ESP8266_SendAT(cmd, ">", 3000))
     {
@@ -463,7 +471,7 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
 
         /* 重发 CIPSEND */
         sprintf(cmd, "AT+CIPSEND=%d\r\n", len);
-        while (USART3_GetByte(&ch)) { }
+        while (USART3_GetByte(&ch)) MQTT_FeedByte(ch);   /* 同首次发送：残留喂解析器而非丢弃 */
         if (!ESP8266_SendAT(cmd, ">", 3000))
         {
             U1_PRINTF("[ESP8266] still no > after reconnect\r\n");
@@ -483,6 +491,12 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
         uint16_t ok_timeout = 2000;
         while (ok_timeout--) {
             while (USART3_GetByte(&ch)) {
+                /* 这个等待窗口有 50~200ms，期间到达的下行 +IPD 帧若只进 ok_buf
+                   就会随 return 一起丢掉。字节一到就喂解析器，覆盖三种情况：
+                   SEND OK 之前到达的帧、超出 ok_buf 63 字节上限被截断的帧、
+                   以及超时 return 0 路径上的帧。不可在 return 前再回灌 ok_buf，
+                   否则同一批字节会被喂两次，破坏 +IPD 状态机的同步。 */
+                MQTT_FeedByte(ch);
                 if (ok_idx < sizeof(ok_buf) - 1) {
                     ok_buf[ok_idx++] = ch;
                     ok_buf[ok_idx]   = '\0';
@@ -712,66 +726,231 @@ uint8_t ESP8266_MQTTPing(void)
 
 /**
   * @brief  处理 USART3 环形缓冲中的 MQTT 下行包
-  *         调用时机：主循环里每次 loop 都应该调
-  *         解析策略：直接扫描 ESP8266 +IPD 帧里的 MQTT PUBLISH 包
+  *         调用时机：主循环每 tick 调一次（非阻塞，不引入任何延时）
+  *
+  * 两级状态机：
+  *   第一级 IPD_* —— 剥掉 ESP8266 AT 固件的 "+IPD,<len>:" 前缀
+  *                   （多连接固件是 "+IPD,<link id>,<len>:"，两种都支持）。
+  *                   只有进入载荷态之后，字节才会被当成 MQTT 固定头。
+  *   第二级 MQTT_ParseFrame() —— 在完整载荷上按 MQTT 3.1.1 解包。
+  *
+  * 为什么必须分两级：ASCII '0'-'9' 是 0x30-0x39，':' 是 0x3A、'=' 是 0x3D，
+  * 它们 & 0xF0 全都等于 0x30。旧实现直接在裸 UART 流上判 (ch & 0xF0)==0x30，
+  * 于是把 "+IPD,2:" 里的 '2' 当成 PUBLISH 固定头、':' 当成剩余长度 58，
+  * 真包被当作包体吞掉，topic/payload 全解析成垃圾。
+  *
+  * 重入说明：MQTT_FeedByte() 只解析、只把命令暂存到 s_pending_cmd，
+  * 绝不在这里回调。因为 ESP8266_SendTCP() 发送前也会调 FeedByte 清缓冲，
+  * 而 MQTT_OnCmdReceived() 里又要 MQTTPublish 上报状态，若在 FeedByte 内
+  * 直接回调就会形成 SendTCP → 回调 → MQTTPublish → SendTCP 的重入。
   */
+
+/* MQTT 固定头高 4 位 */
+#define MQTT_PKT_PUBLISH    0x30
+#define MQTT_PKT_PINGRESP   0xD0
+
+#define IPD_BUF_SIZE        128   /* 单帧 +IPD 载荷上限，超长的帧丢弃但仍计数字节以保持同步 */
+#define IPD_LEN_MAX         2048  /* +IPD 长度字段的溢出保护上限 */
+#define CMD_BUF_SIZE        32    /* 暂存下行命令 payload（"on"/"off" 之类） */
+#define TOPIC_BUF_SIZE      40    /* topic 本地副本，够放 MQTT_TOPIC_CMD 并留 '\0' */
+
+typedef enum {
+    IPD_IDLE = 0,   /* 等 '+' */
+    IPD_I,          /* 已收 '+'，等 'I' */
+    IPD_P,          /* 等 'P' */
+    IPD_D,          /* 等 'D' */
+    IPD_NUM1,       /* 读第一段数字：单连接=载荷长度，多连接=link id */
+    IPD_NUM2,       /* 多连接：读第二段数字=载荷长度 */
+    IPD_PAYLOAD,    /* 收载荷，存进 s_ipd_buf */
+    IPD_SKIP        /* 载荷超过 IPD_BUF_SIZE：只计数不存，收满后丢弃 */
+} IPD_State_t;
+
+static IPD_State_t s_ipd_state = IPD_IDLE;
+static uint16_t    s_ipd_len   = 0;     /* +IPD 声明的载荷长度 */
+static uint16_t    s_ipd_got   = 0;     /* 已收载荷字节数 */
+static uint8_t     s_ipd_buf[IPD_BUF_SIZE];
+
+static char        s_pending_cmd[CMD_BUF_SIZE];
+static uint8_t     s_pending_valid = 0;
+
+/**
+  * @brief  在一帧完整的 +IPD 载荷上解析 MQTT 包（一帧可能含多个包）
+  * @param  buf: 载荷首地址，len: 载荷字节数
+  */
+static void MQTT_ParseFrame(const uint8_t *buf, uint16_t len)
+{
+    /* topic / payload 的本地副本：包内字段不带 '\0'，必须拷出来再终止，
+       不能在 buf 上就地写终止符（旧实现的越界写就是这么来的）。
+       用 static 是为了不占主循环栈（Stack_Size 只有 0x400）。 */
+    static char topic_s[TOPIC_BUF_SIZE];
+    static char payload_s[CMD_BUF_SIZE];
+    uint16_t off = 0;
+
+    while (off + 2 <= len)
+    {
+        uint8_t  type = buf[off] & 0xF0;
+        uint16_t rl   = buf[off + 1];    /* 剩余长度：本项目 QoS 0 小包，单字节够用 */
+        const uint8_t *body;
+        uint16_t tlen, plen, i;
+
+        if (rl > 127) {
+            U1_PRINTF("[MQTT] rx: remaining length >127 unsupported, frame dropped\r\n");
+            return;
+        }
+        /* 卫兵：包体必须完整落在这一帧里 */
+        if (off + 2 + rl > len) {
+            U1_PRINTF("[MQTT] rx: truncated, need %u have %u, frame dropped\r\n",
+                      (unsigned)(off + 2 + rl), (unsigned)len);
+            return;
+        }
+
+        if (type == MQTT_PKT_PINGRESP) {
+            U1_PRINTF("[MQTT] PINGRESP\r\n");
+            off += 2 + rl;
+            continue;
+        }
+
+        if (type != MQTT_PKT_PUBLISH) {
+            /* CONNACK / SUBACK 由各自的握手路径用签名扫描处理，这里只跳过 */
+            off += 2 + rl;
+            continue;
+        }
+
+        /* ---- PUBLISH：body = topic_len(2) + topic + payload ---- */
+        body = buf + off + 2;
+        tlen = ((uint16_t)body[0] << 8) | body[1];
+
+        /* 卫兵：topic 长度不能超出剩余长度 */
+        if (tlen + 2 > rl) {
+            U1_PRINTF("[MQTT] rx: bad topic len %u (rl=%u), frame dropped\r\n",
+                      (unsigned)tlen, (unsigned)rl);
+            return;
+        }
+        plen = rl - 2 - tlen;   /* QoS 0 无 packet id，剩下的全是 payload */
+
+        /* 卫兵：两个字段都要装得下本地副本，且留得出 '\0' */
+        if (tlen >= sizeof(topic_s) || plen >= sizeof(payload_s)) {
+            U1_PRINTF("[MQTT] rx: topic/payload too long (%u/%u), frame dropped\r\n",
+                      (unsigned)tlen, (unsigned)plen);
+            return;
+        }
+
+        for (i = 0; i < tlen; i++) topic_s[i]   = (char)body[2 + i];
+        topic_s[tlen] = '\0';
+        for (i = 0; i < plen; i++) payload_s[i] = (char)body[2 + tlen + i];
+        payload_s[plen] = '\0';
+
+        U1_PRINTF("[MQTT] rx PUBLISH topic=%s payload=%.32s\r\n", topic_s, payload_s);
+
+        if (strcmp(topic_s, MQTT_TOPIC_CMD) == 0) {
+            strncpy(s_pending_cmd, payload_s, sizeof(s_pending_cmd) - 1);
+            s_pending_cmd[sizeof(s_pending_cmd) - 1] = '\0';
+            s_pending_valid = 1;
+        }
+
+        off += 2 + rl;
+    }
+}
+
+/**
+  * @brief  把一个 UART 字节喂给 +IPD 分帧器
+  * @note   非阻塞、无延时、不回调；可安全地从发送路径调用
+  */
+static void MQTT_FeedByte(uint8_t ch)
+{
+    switch (s_ipd_state)
+    {
+        case IPD_IDLE:
+            if (ch == '+') s_ipd_state = IPD_I;
+            break;
+
+        case IPD_I:
+            if (ch == 'I')      s_ipd_state = IPD_P;
+            else if (ch == '+') s_ipd_state = IPD_I;   /* 连续 '+'，停留在起始态 */
+            else                s_ipd_state = IPD_IDLE;
+            break;
+
+        case IPD_P:
+            s_ipd_state = (ch == 'P') ? IPD_D    : IPD_IDLE;
+            break;
+
+        case IPD_D:
+            if (ch == 'D') { s_ipd_len = 0; s_ipd_state = IPD_NUM1; }
+            else             s_ipd_state = IPD_IDLE;
+            break;
+
+        case IPD_NUM1:
+            if (ch >= '0' && ch <= '9') {
+                s_ipd_len = s_ipd_len * 10 + (uint16_t)(ch - '0');
+                if (s_ipd_len > IPD_LEN_MAX) { s_ipd_len = 0; s_ipd_state = IPD_IDLE; }
+            }
+            else if (ch == ',') {                 /* 多连接：第一段是 link id */
+                s_ipd_len   = 0;
+                s_ipd_state = IPD_NUM2;
+            }
+            else if (ch == ':') {                 /* 单连接：第一段就是长度 */
+                s_ipd_got   = 0;
+                if (s_ipd_len == 0)                s_ipd_state = IPD_IDLE;
+                else if (s_ipd_len > IPD_BUF_SIZE) s_ipd_state = IPD_SKIP;
+                else                               s_ipd_state = IPD_PAYLOAD;
+            }
+            else s_ipd_state = IPD_IDLE;
+            break;
+
+        case IPD_NUM2:
+            if (ch >= '0' && ch <= '9') {
+                s_ipd_len = s_ipd_len * 10 + (uint16_t)(ch - '0');
+                if (s_ipd_len > IPD_LEN_MAX) { s_ipd_len = 0; s_ipd_state = IPD_IDLE; }
+            }
+            else if (ch == ':') {
+                s_ipd_got   = 0;
+                if (s_ipd_len == 0)                s_ipd_state = IPD_IDLE;
+                else if (s_ipd_len > IPD_BUF_SIZE) s_ipd_state = IPD_SKIP;
+                else                               s_ipd_state = IPD_PAYLOAD;
+            }
+            else s_ipd_state = IPD_IDLE;
+            break;
+
+        case IPD_PAYLOAD:
+            if (s_ipd_got < IPD_BUF_SIZE) s_ipd_buf[s_ipd_got] = ch;
+            s_ipd_got++;
+            if (s_ipd_got >= s_ipd_len) {
+                MQTT_ParseFrame(s_ipd_buf, s_ipd_got);
+                s_ipd_len   = 0;
+                s_ipd_got   = 0;
+                s_ipd_state = IPD_IDLE;
+            }
+            break;
+
+        case IPD_SKIP:
+            /* 帧太长装不下：继续计数直到帧尾，保证后续字节同步不被打乱 */
+            s_ipd_got++;
+            if (s_ipd_got >= s_ipd_len) {
+                U1_PRINTF("[MQTT] rx: +IPD frame %u bytes > buf %u, dropped\r\n",
+                          (unsigned)s_ipd_len, (unsigned)IPD_BUF_SIZE);
+                s_ipd_len   = 0;
+                s_ipd_got   = 0;
+                s_ipd_state = IPD_IDLE;
+            }
+            break;
+
+        default:
+            s_ipd_state = IPD_IDLE;
+            break;
+    }
+}
+
 void ESP8266_MQTTProcessRx(void)
 {
-    /* 轻量解析：只识别 MQTT PUBLISH (0x3X) 和 PINGRESP (0xD0) */
     uint8_t ch;
-    static uint8_t state = 0;       /* 0=等待首字节, 1=读剩余长度, 2=读 payload */
-    static uint8_t rx_buf[256];
-    static uint16_t rx_idx = 0;
-    static uint16_t want = 0;
-    uint8_t pkt_type;
 
     while (USART3_GetByte(&ch))
-    {
-        if (state == 0) {
-            pkt_type = ch & 0xF0;
-            rx_idx  = 0;
-            if (pkt_type == 0x30)   /* PUBLISH */ { state = 1; want = 0; }
-            else if (pkt_type == 0xD0) { /* PINGRESP */ state = 0; want = 0;
-                U1_PRINTF("[MQTT] PINGRESP\r\n"); }
-            /* SUBACK / CONNACK 也可能从这里进，但已经在 Connect/Subscribe 里处理过了 */
-        }
-        else if (state == 1) {
-            /* 剩余长度（单字节即可，我们的包不会超过 127 字节） */
-            want = ch;
-            state = 2;
-            rx_idx = 0;
-            if (want == 0) {
-                /* 空包（如 PINGRESP 从这里漏进来） */
-                state = 0;
-            }
-        }
-        else if (state == 2) {
-            if (rx_idx < sizeof(rx_buf) - 1)
-                rx_buf[rx_idx++] = ch;
+        MQTT_FeedByte(ch);
 
-            if (rx_idx >= want) {
-                /* 解析 PUBLISH 包：
-                   首字节已跳过(0x3X)，第二字节是剩余长度(=want)
-                   然后: topic_len(2) + topic + payload
-                */
-                uint16_t p = 0;
-                uint16_t tlen = ((uint16_t)rx_buf[p] << 8) | rx_buf[p+1]; p += 2;
-                const char *topic    = (const char *)(rx_buf + p);      p += tlen;
-                const char *payload  = (const char *)(rx_buf + p);
-                uint16_t   plen      = want - 2 - tlen;
-                rx_buf[p + plen] = '\0';   /* 确保 payload 末尾 0 终止 */
-
-                U1_PRINTF("[MQTT] rx PUBLISH topic=%s payload=%.32s\r\n",
-                          topic, payload);
-
-                /* 如果是 home/light/cmd，回调 main.c */
-                if (strcmp(topic, MQTT_TOPIC_CMD) == 0) {
-                    if (MQTT_OnCmdReceived) MQTT_OnCmdReceived(payload);
-                }
-
-                state = 0;
-            }
-        }
+    /* 回调统一在这里派发（主循环上下文），FeedByte 内部只暂存 */
+    if (s_pending_valid) {
+        s_pending_valid = 0;
+        MQTT_OnCmdReceived(s_pending_cmd);
     }
 }
 
@@ -899,7 +1078,7 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
     delay_ms(200);
 
     /* 2. 清空 USART3 残留数据 */
-    while (USART3_GetByte(&ch)) { }
+    while (USART3_GetByte(&ch)) MQTT_FeedByte(ch);
 
     /* 3. 确保 CIPMUX=0 单连接模式 */
     for (retry = 0; retry < 3; retry++) {
@@ -908,7 +1087,7 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
             break;
         }
         delay_ms(500);
-        while (USART3_GetByte(&ch)) { }
+        while (USART3_GetByte(&ch)) MQTT_FeedByte(ch);
     }
     if (retry >= 3) {
         U1_PRINTF("[NTP] CIPMUX=0 failed\r\n");
@@ -1036,7 +1215,7 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
 
 restore_udp:
     /* 关闭 NTP UDP 连接 */
-    while (USART3_GetByte(&ch)) { }
+    while (USART3_GetByte(&ch)) MQTT_FeedByte(ch);
     ESP8266_SendAT("AT+CIPCLOSE\r\n", NULL, 0);
     delay_ms(300);
 

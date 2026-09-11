@@ -127,12 +127,16 @@ static uint32_t s_mqtt_last_ping_tick = 0;
 /* ESP8266 下行控制指令回调：收到 home/light/cmd 的 PUBLISH 时调用 */
 void MQTT_OnCmdReceived(const char *payload)
 {
+    /* led.c 的 case 编号比 led.h 的宏名大 1（API 是 1-based，宏是 0-based）：
+       case 1→LED0=PF9  case 2→LED1=PF10  case 3→LED2=PE13  case 4→LED3=PE14
+       这里用 3 → PE13（GEC-M4 原理图 Page 2 的 FSMC_D10，板载 D3），
+       全项目仅此处驱动，不会被告警灯逻辑（用 case 1 = PF9）覆盖。 */
     if (strcmp(payload, "on") == 0) {
-        LED_ON(0);
+        LED_ON(3);
         USART1_Printf("[MQTT] CMD=on\n");
     }
     else if (strcmp(payload, "off") == 0) {
-        LED_OFF(0);
+        LED_OFF(3);
         USART1_Printf("[MQTT] CMD=off\n");
     }
     else {
