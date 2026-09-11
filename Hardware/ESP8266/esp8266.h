@@ -67,7 +67,7 @@ uint8_t ESP8266_IsWiFiOk(void);        /* 返回 WiFi 连接状态，供 OLED �
 #define BEMFA_SERVER          "tcp.bemfa.com"
 #define BEMFA_PORT            8344
 #define BEMFA_UID             "REDACTED_BEMFA_UID"
-#define BEMFA_TOPIC           "SmartGuard"
+#define BEMFA_TOPIC           "AbzQgfxVZ001"
 
 uint8_t ESP8266_BemfaConnect(void);
 uint8_t ESP8266_BemfaSubscribe(void);
