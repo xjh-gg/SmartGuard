@@ -534,6 +534,16 @@ int main(void)
                 g_alert == ALERT_FIRE ? "!!FIRE!!" :
                 g_alert == ALERT_TAMPER ? "!!TAMPER!!" : "!!ENV!!");
 
+            /* 运行期阈值真值：学习期那条 "[AT] ... fire_th=" 是一次性快照，
+               此后 AT_Update 每 2s 重算阈值，只有这里能看到实时值和 MQ2 余量。
+               降频到 10s：阈值靠 EWMA(alpha=0.01) 漂移，是慢变量，2s 粒度只是噪音。
+               外层已是 %20（2s），100 是 20 的整数倍，故与 10s 遥测同拍不错位。 */
+            if (loop_tick % 100 == 0) {
+                USART1_Printf("[DBG] MQ2=%d th=%d T=%.1fC\r\n",
+                              g_sensor.mq2_adc, AT_GetBaseline()->mq2_fire_threshold,
+                              g_sensor.temperature);
+            }
+
             /* 告警处理 —— 统一出口（决策引擎 + 手动测试） */
             {
                 Alert_Type_t effective = (g_manual_alert != ALERT_NONE) ? g_manual_alert : g_alert;
