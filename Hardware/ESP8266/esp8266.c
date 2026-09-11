@@ -1,4 +1,4 @@
-/**
+﻿/**
   ******************************************************************************
   * @file    esp8266.c
   * @brief   ESP8266 WiFi 模块驱动实现（UDP 数据上报）
@@ -15,41 +15,84 @@
 #include <string.h>
 #include <stdio.h>
 
-#define U1_PRINTF  USART1_Printf   /* 方便切换到 USART2/其他串口调试 */
+#define U1_PRINTF  USART1_Printf   /* easy to switch to USART2/other UART for debugging */
+
+/* 抑制 #236-D: controlling expression is constant
+   原因：MQTT_OnCmdReceived 函数指针是链接期常量，编译器保守判断 */
+#pragma diag_suppress 236
 
 static uint8_t  s_send_fail_count = 0;  /* 连续发送失败计数，用于健康检查 */
 static volatile uint8_t s_wifi_ok = 0;  /* WiFi 连接状态，供 OLED 状态栏读取 */
+static uint8_t  s_mqtt_ok = 0;          /* MQTT 握手完成标志（CONNECT+SUBSCRIBE 都成功） */
 
 /**
   * @brief  初始化 ESP8266 通信接口并连接 WiFi
-  * @note   固定使用 USART3 115200 波特率；先测 AT、再连 WiFi、最后可选连 UDP
+  * @note   先 115200 波特率探测，失败则降级 9600；再测 AT、连 WiFi、可选连 UDP
   * @retval 1 = WiFi 连接成功，0 = 失败
   */
 uint8_t ESP8266_Init(void)
 {
-    USART3_Init(115200);
+    uint32_t baud;
+    uint8_t  at_ok = 0;
 
-    /* 1. 发送 AT 检查 ESP8266 是否活着 */
-    if (!ESP8266_SendAT("AT\r\n", "OK", 1000))
+    U1_PRINTF("[ESP] --- ESP8266_Init start ---\r\n");
+
+    /* 1. 波特率探测：先试 115200，不行再降级 9600 */
+    for (baud = 115200; baud >= 9600; baud = (baud == 115200) ? 9600 : 0)
     {
-        /* 没响应就复位一次再试 */
-        ESP8266_Reset();
-        if (!ESP8266_SendAT("AT\r\n", "OK", 1000))
+        if (baud == 0) break;
+        U1_PRINTF("[ESP] trying USART3 @ %lu baud...\r\n", baud);
+        USART3_Init(baud);
+        delay_ms(200);   /* 等 USART 稳定 */
+        USART3_FlushRx();
+
+        if (ESP8266_SendAT("AT\r\n", "OK", 3000))
         {
-            s_wifi_ok = 0;
-            return 0;   /* ESP8266 彻底没反应 */
+            at_ok = 1;
+            U1_PRINTF("[ESP] AT OK at %lu baud\r\n", baud);
+            break;
         }
+        U1_PRINTF("[ESP] AT no response at %lu baud, trying next...\r\n", baud);
     }
 
-    /* 2. 连接 WiFi */
+    if (!at_ok)
+    {
+        U1_PRINTF("[ESP] AT no response at 115200 and 9600, hardware issue!\r\n");
+        U1_PRINTF("[ESP] check: 3.3V power? TX->RXD? RX->TXD? GND connected?\r\n");
+        s_wifi_ok = 0;
+        return 0;
+    }
+
+    /* 2. 软件复位一次，确保干净状态，再验一次 AT */
+    U1_PRINTF("[ESP] resetting module...\r\n");
+    ESP8266_Reset();
+    delay_ms(500);
+
+    if (!ESP8266_SendAT("AT\r\n", "OK", 3000))
+    {
+        U1_PRINTF("[ESP] no AT after reset, giving up\r\n");
+        s_wifi_ok = 0;
+        return 0;
+    }
+
+    /* 3. 连接 WiFi */
+    U1_PRINTF("[ESP] connecting WiFi SSID=\"%s\"...\r\n", ESP8266_WIFI_SSID);
     if (!ESP8266_ConnectAP(ESP8266_WIFI_SSID, ESP8266_WIFI_PASSWORD))
     {
-        return 0;   /* WiFi 连接失败 */
+        U1_PRINTF("[ESP] WiFi connect FAIL\r\n");
+        return 0;
     }
+    U1_PRINTF("[ESP] WiFi connected!\r\n");
 
-#if USE_BEMFA
-    if (!ESP8266_BemfaConnect())
-        U1_PRINTF("[BEMFA] Init FAIL, CheckHealth will retry\r\n");
+#if USE_MQTT
+    if (!ESP8266_MQTTConnect())
+        U1_PRINTF("[MQTT] Init FAIL, CheckHealth will retry\r\n");
+    else if (!ESP8266_MQTTSubscribe())
+        U1_PRINTF("[MQTT] Subscribe FAIL\r\n");
+    else {
+        s_mqtt_ok = 1;   /* CONNECT + SUBSCRIBE 都成功，MQTT 会话就绪 */
+        U1_PRINTF("[MQTT] Init OK (session ready)\r\n");
+    }
 #else
     /* 3. 建立 UDP 连接到电脑（用于推告警） */
     U1_PRINTF("[...] ESP8266 connecting UDP to %s:%d...\r\n",
@@ -68,7 +111,7 @@ uint8_t ESP8266_Init(void)
 }
 
 /**
-  * @brief  发送 AT 指令并等待指定应答
+  * @brief  发送 AT 指令并等待指定应答（带完整调试日志）
   * @param  cmd:    要发送的 AT 指令字符串（需已包含 \r\n）
   * @param  ack:    期望收到的应答字符串，NULL 表示不等待应答
   * @param  timeout_ms: 超时时间（毫秒）
@@ -79,17 +122,20 @@ uint8_t ESP8266_SendAT(char *cmd, char *ack, uint16_t timeout_ms)
     uint8_t rx_buf[256];
     uint16_t rx_idx = 0;
     uint8_t ch;
+    uint16_t start_remain = timeout_ms;
 
     USART3_FlushRx();
     memset(rx_buf, 0, sizeof(rx_buf));
 
     if (cmd != NULL)
     {
+        U1_PRINTF("[ESP] >>> %s", cmd);
         USART3_SendString(cmd);
     }
 
     if (ack == NULL)
     {
+        U1_PRINTF("[ESP] (no ack expected, fire-and-forget)\r\n");
         return 1;
     }
 
@@ -106,6 +152,7 @@ uint8_t ESP8266_SendAT(char *cmd, char *ack, uint16_t timeout_ms)
 
         if (strstr((char *)rx_buf, ack) != NULL)
         {
+            U1_PRINTF("[ESP] <<< OK (found \"%s\", raw=%.128s)\r\n", ack, rx_buf);
             return 1;
         }
 
@@ -113,6 +160,8 @@ uint8_t ESP8266_SendAT(char *cmd, char *ack, uint16_t timeout_ms)
         delay_ms(1);
     }
 
+    U1_PRINTF("[ESP] <<< TIMEOUT %ums, looking for \"%s\", got (%u bytes): %.128s\r\n",
+              start_remain, ack, rx_idx, rx_buf);
     return 0;
 }
 
@@ -126,37 +175,72 @@ void ESP8266_Reset(void)
 }
 
 /**
-  * @brief  设置 ESP8266 工作模式
+  * @brief  设置 ESP8266 工作模式（带固件版本 fallback）
   * @param  mode: 1=STA  Station 模式
   *              2=AP   Access Point 模式
   *              3=AP+STA 混合模式
+  * @note   新版固件用 CWMODE_CUR，老固件只认 CWMODE（无后缀）
   */
 uint8_t ESP8266_SetMode(uint8_t mode)
 {
     char cmd[32];
+    uint8_t ok;
+
     sprintf(cmd, "AT+CWMODE_CUR=%d\r\n", mode);
-    return ESP8266_SendAT(cmd, "OK", 1000);
+    ok = ESP8266_SendAT(cmd, "OK", 1000);
+    if (ok) return 1;
+
+    U1_PRINTF("[ESP] CWMODE_CUR failed, trying CWMODE fallback...\r\n");
+    sprintf(cmd, "AT+CWMODE=%d\r\n", mode);
+    ok = ESP8266_SendAT(cmd, "OK", 1000);
+    if (ok) return 1;
+
+    U1_PRINTF("[ESP] both CWMODE_CUR and CWMODE failed, module in wrong mode\r\n");
+    return 0;
 }
 
 /**
-  * @brief  STA 模式连接指定 WiFi
+  * @brief  STA 模式连接指定 WiFi（带固件版本 fallback）
+  * @note   新版固件用 CWJAP_CUR，老固件只认 CWJAP（无后缀）
   */
 uint8_t ESP8266_ConnectAP(char *ssid, char *password)
 {
     char cmd[128];
+    uint8_t ok;
 
+    /* 1. 设置 STA 模式（带 fallback） */
+    U1_PRINTF("[ESP] setting STA mode...\r\n");
     if (!ESP8266_SetMode(1))
     {
+        U1_PRINTF("[ESP] SetMode FAIL, cannot continue\r\n");
         s_wifi_ok = 0;
         return 0;
     }
 
+    /* 2. 先断开上次连接（防 WIFI DISCONNECT 残留） */
+    ESP8266_SendAT("AT+CWQAP\r\n", "OK", 1000);
+    delay_ms(200);
+
+    /* 3. 先试 CWJAP_CUR（新固件），失败 fallback CWJAP（老固件） */
     sprintf(cmd, "AT+CWJAP_CUR=\"%s\",\"%s\"\r\n", ssid, password);
-    if (ESP8266_SendAT(cmd, "OK", 15000))
+    U1_PRINTF("[ESP] trying CWJAP_CUR...\r\n");
+    ok = ESP8266_SendAT(cmd, "OK", 15000);
+    if (!ok)
     {
+        U1_PRINTF("[ESP] CWJAP_CUR failed, trying CWJAP fallback...\r\n");
+        sprintf(cmd, "AT+CWJAP=\"%s\",\"%s\"\r\n", ssid, password);
+        ok = ESP8266_SendAT(cmd, "OK", 15000);
+    }
+
+    if (ok)
+    {
+        U1_PRINTF("[ESP] WiFi connected OK!\r\n");
         s_wifi_ok = 1;
         return 1;
     }
+
+    U1_PRINTF("[ESP] WiFi connect FAIL (SSID=\"%s\")\r\n", ssid);
+    U1_PRINTF("[ESP] check: SSID/password correct? hotspot on?\r\n");
     s_wifi_ok = 0;
     return 0;
 }
@@ -333,21 +417,58 @@ uint8_t ESP8266_ConnectTCP(char *ip, uint16_t port)
 }
 
 /**
-  * @brief  发送 TCP 数据
+  * @brief  发送 TCP 数据（带 link 自动重连）
   */
 uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
 {
     char cmd[32];
     uint16_t i;
     uint8_t ch;
+    uint8_t need_reconnect = 0;
 
     sprintf(cmd, "AT+CIPSEND=%d\r\n", len);
     while (USART3_GetByte(&ch)) { }   /* 清掉连接状态残留 */
 
     if (!ESP8266_SendAT(cmd, ">", 3000))
     {
-        U1_PRINTF("[ESP8266] no > prompt\r\n");
-        return 0;
+        /* 读一下 ESP8266 的完整错误响应，判断是不是 link 断了 */
+        uint8_t  err_buf[64] = {0};
+        uint16_t err_idx = 0;
+        while (USART3_GetByte(&ch) && err_idx < sizeof(err_buf) - 1)
+            err_buf[err_idx++] = ch;
+        err_buf[err_idx] = 0;
+
+        if (strstr((char *)err_buf, "link is not valid") ||
+            strstr((char *)err_buf, "ERROR"))
+        {
+            U1_PRINTF("[ESP8266] TCP link down, auto reconnecting...\r\n");
+            need_reconnect = 1;
+        }
+        else
+        {
+            U1_PRINTF("[ESP8266] no > prompt (got: %.48s)\r\n", err_buf);
+            return 0;
+        }
+    }
+
+    if (need_reconnect)
+    {
+        s_mqtt_ok = 0;   /* TCP 重建了，MQTT 会话丢了，必须重握手 */
+        if (!ESP8266_ConnectTCP(MQTT_SERVER, MQTT_PORT))
+        {
+            U1_PRINTF("[ESP8266] TCP reconnect FAIL\r\n");
+            return 0;
+        }
+        U1_PRINTF("[ESP8266] TCP reconnected, resending...\r\n");
+
+        /* 重发 CIPSEND */
+        sprintf(cmd, "AT+CIPSEND=%d\r\n", len);
+        while (USART3_GetByte(&ch)) { }
+        if (!ESP8266_SendAT(cmd, ">", 3000))
+        {
+            U1_PRINTF("[ESP8266] still no > after reconnect\r\n");
+            return 0;
+        }
     }
 
     delay_ms(100);   /* 等 > 提示稳定 */
@@ -383,10 +504,280 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
     }
 }
 
+/* =====================================================================
+ * MQTT 3.1.1 精简实现（替代原巴法云 TCP 协议）
+ * 底层 TCP 收发直接复用 ESP8266_ConnectTCP / ESP8266_SendTCP
+ * ===================================================================== */
+
+/* 写 MQTT UTF-8 字符串（2 字节大端长度前缀 + payload） */
+static uint16_t MQTT_WriteStr(uint8_t *dst, const char *s)
+{
+    uint16_t len = (uint16_t)strlen(s);
+    dst[0] = (len >> 8) & 0xFF;
+    dst[1] =  len       & 0xFF;
+    memcpy(dst + 2, s, len);
+    return len + 2;
+}
+
 /**
-  * @brief  Connect to Bemfa TCP server and subscribe topic
+  * @brief  连接 MQTT Broker：TCP 连接 + MQTT CONNECT
   * @retval 1=OK, 0=FAIL
   */
+uint8_t ESP8266_MQTTConnect(void)
+{
+    uint8_t pkt[128];
+    uint16_t pos;
+
+    U1_PRINTF("[MQTT] Closing old socket...\r\n");
+    ESP8266_SendAT("AT+CIPCLOSE\r\n", "OK", 2000);
+    delay_ms(300);
+
+    U1_PRINTF("[MQTT] Connecting %s:%d\r\n", MQTT_SERVER, MQTT_PORT);
+    if (!ESP8266_ConnectTCP(MQTT_SERVER, MQTT_PORT)) {
+        U1_PRINTF("[MQTT] TCP FAIL\r\n");
+        return 0;
+    }
+
+    /* --- 构造 MQTT CONNECT 报文 ---
+       固定头: 0x10 | 剩余长度 (单字节，<=127)
+       可变头: 协议名 "MQTT"(6) + 级别 0x04 + 标志 0x02(Clean) + KeepAlive(2)
+       Payload: ClientID
+    */
+    pos = 2;  /* 预留固定头 2 字节 */
+    pos += MQTT_WriteStr(pkt + pos, "MQTT");    /* 协议名 */
+    pkt[pos++] = 0x04;                           /* 协议级别 4 = 3.1.1 */
+    pkt[pos++] = 0x02;                           /* Connect Flags: CleanSession=1 */
+    pkt[pos++] = (MQTT_KEEPALIVE_SEC >> 8) & 0xFF;
+    pkt[pos++] =  MQTT_KEEPALIVE_SEC       & 0xFF;
+    pos += MQTT_WriteStr(pkt + pos, MQTT_CLIENT_ID);
+
+    pkt[0] = 0x10;                               /* CONNECT */
+    pkt[1] = (uint8_t)(pos - 2);                 /* 剩余长度 */
+
+    U1_PRINTF("[MQTT] Sending CONNECT (%d bytes)\r\n", pos);
+    if (!ESP8266_SendTCP(pkt, pos)) {
+        U1_PRINTF("[MQTT] CONNECT send FAIL\r\n");
+        return 0;
+    }
+
+    /* 等 CONNACK：固定头 0x20 0x02 XX 0x00(返回码=0)
+       ESP8266 的下行数据通常带 +IPD,N: 前缀，且 CIPSEND 的 SEND OK
+       读缓冲可能把前缀吞成残缺的 PD,/D,/、: 等，因此不能假设 CONNACK
+       从字节 0 开始，必须对整段缓冲扫描 0x20 0x02 XX 0x00 签名。 */
+    {
+        uint8_t  rx[64] = {0};
+        uint16_t rx_idx = 0;
+        uint16_t i;
+        uint8_t  ch;
+        uint16_t t = 2000;
+        while (t--) {
+            while (USART3_GetByte(&ch)) {
+                if (rx_idx < sizeof(rx) - 1) rx[rx_idx++] = ch;
+            }
+            for (i = 0; i + 3 < rx_idx; i++) {
+                if (rx[i] == 0x20 && rx[i+1] == 0x02 && rx[i+3] == 0x00) {
+                    U1_PRINTF("[MQTT] CONNACK OK (off=%u)\r\n", i);
+                    return 1;
+                }
+            }
+            IWDG_Feed();
+            delay_ms(1);
+        }
+        U1_PRINTF("[MQTT] no CONNACK, raw: %.32s\r\n", rx);
+        return 0;
+    }
+}
+
+/**
+  * @brief  订阅控制指令主题 MQTT_TOPIC_CMD
+  * @retval 1=OK, 0=FAIL
+  */
+uint8_t ESP8266_MQTTSubscribe(void)
+{
+    uint8_t pkt[64];
+    uint16_t pos;
+    uint16_t pkt_id = 1;
+
+    pos = 2;   /* 固定头 2 字节 */
+    pkt[pos++] = (pkt_id >> 8) & 0xFF;
+    pkt[pos++] =  pkt_id       & 0xFF;
+    pos += MQTT_WriteStr(pkt + pos, MQTT_TOPIC_CMD);
+    pkt[pos++] = 0x00;   /* QoS 0 */
+
+    pkt[0] = 0x82;       /* SUBSCRIBE (fixed=0x80 | flags=0x02) */
+    pkt[1] = (uint8_t)(pos - 2);
+
+    U1_PRINTF("[MQTT] Subscribing %s (%d bytes)\r\n", MQTT_TOPIC_CMD, pos);
+    if (!ESP8266_SendTCP(pkt, pos)) {
+        U1_PRINTF("[MQTT] SUBSCRIBE send FAIL\r\n");
+        return 0;
+    }
+
+    /* 等 SUBACK: 0x90 <剩余长度> <pkt_id高> <pkt_id低> <0x00>
+       与 CONNACK 同理：SUBACK 也带 +IPD,N: 前缀且可能被 SEND OK
+       缓冲切碎，故对整个缓冲扫描 0x90 ... 0x00 签名。 */
+    {
+        uint8_t  rx[32] = {0};
+        uint16_t rx_idx = 0;
+        uint16_t i;
+        uint8_t  ch;
+        uint16_t t = 2000;
+        while (t--) {
+            while (USART3_GetByte(&ch)) {
+                if (rx_idx < sizeof(rx) - 1) rx[rx_idx++] = ch;
+            }
+            for (i = 0; i + 4 < rx_idx; i++) {
+                if (rx[i] == 0x90 && rx[i+4] == 0x00) {
+                    U1_PRINTF("[MQTT] SUBACK OK\r\n");
+                    return 1;
+                }
+            }
+            IWDG_Feed();
+            delay_ms(1);
+        }
+        U1_PRINTF("[MQTT] no SUBACK\r\n");
+        return 0;
+    }
+}
+
+/**
+  * @brief  确保 MQTT 会话有效（TCP + CONNECT + SUBSCRIBE 都 OK）
+  * @retval 1=会话就绪，0=重连失败
+  */
+static uint8_t MQTT_EnsureSession(void)
+{
+    if (s_mqtt_ok) return 1;   /* 会话还活着，直接用 */
+
+    U1_PRINTF("[MQTT] session lost, full reconnect...\r\n");
+    if (!ESP8266_MQTTConnect())
+    {
+        U1_PRINTF("[MQTT] CONNECT FAIL\r\n");
+        return 0;
+    }
+    if (!ESP8266_MQTTSubscribe())
+    {
+        U1_PRINTF("[MQTT] SUBSCRIBE FAIL\r\n");
+        return 0;
+    }
+    s_mqtt_ok = 1;
+    U1_PRINTF("[MQTT] session restored OK\r\n");
+    return 1;
+}
+
+/**
+  * @brief  向指定主题发布消息（QoS 0，不等待 PUBACK）
+  */
+uint8_t ESP8266_MQTTPublish(const char *topic, const char *payload)
+{
+    uint8_t pkt[256];
+    uint16_t pos;
+    uint16_t tlen, plen;
+
+    if (!topic || !payload) return 0;
+
+    /* 确保 MQTT 会话有效（TCP link 存在 + CONNECT + SUBSCRIBE 已完成） */
+    if (!MQTT_EnsureSession())
+    {
+        return 0;
+    }
+
+    tlen = (uint16_t)strlen(topic);
+    plen = (uint16_t)strlen(payload);
+    if (2 + 2 + tlen + plen > sizeof(pkt) - 2) {
+        U1_PRINTF("[MQTT] PUBLISH pkt too big\r\n");
+        return 0;
+    }
+
+    pos = 2;   /* 固定头 2 字节 */
+    pos += MQTT_WriteStr(pkt + pos, topic);
+    memcpy(pkt + pos, payload, plen);
+    pos += plen;
+
+    pkt[0] = 0x30;                  /* PUBLISH QoS 0 (no dup, no retain) */
+    pkt[1] = (uint8_t)(pos - 2);
+
+    return ESP8266_SendTCP(pkt, pos);
+}
+
+/**
+  * @brief  MQTT PINGREQ 心跳（确保会话有效后再发）
+  */
+uint8_t ESP8266_MQTTPing(void)
+{
+    static uint8_t ping[] = {0xC0, 0x00};   /* PINGREQ + 剩余长度 0 */
+
+    if (!MQTT_EnsureSession()) return 0;
+    return ESP8266_SendTCP(ping, 2);
+}
+
+/**
+  * @brief  处理 USART3 环形缓冲中的 MQTT 下行包
+  *         调用时机：主循环里每次 loop 都应该调
+  *         解析策略：直接扫描 ESP8266 +IPD 帧里的 MQTT PUBLISH 包
+  */
+void ESP8266_MQTTProcessRx(void)
+{
+    /* 轻量解析：只识别 MQTT PUBLISH (0x3X) 和 PINGRESP (0xD0) */
+    uint8_t ch;
+    static uint8_t state = 0;       /* 0=等待首字节, 1=读剩余长度, 2=读 payload */
+    static uint8_t rx_buf[256];
+    static uint16_t rx_idx = 0;
+    static uint16_t want = 0;
+    uint8_t pkt_type;
+
+    while (USART3_GetByte(&ch))
+    {
+        if (state == 0) {
+            pkt_type = ch & 0xF0;
+            rx_idx  = 0;
+            if (pkt_type == 0x30)   /* PUBLISH */ { state = 1; want = 0; }
+            else if (pkt_type == 0xD0) { /* PINGRESP */ state = 0; want = 0;
+                U1_PRINTF("[MQTT] PINGRESP\r\n"); }
+            /* SUBACK / CONNACK 也可能从这里进，但已经在 Connect/Subscribe 里处理过了 */
+        }
+        else if (state == 1) {
+            /* 剩余长度（单字节即可，我们的包不会超过 127 字节） */
+            want = ch;
+            state = 2;
+            rx_idx = 0;
+            if (want == 0) {
+                /* 空包（如 PINGRESP 从这里漏进来） */
+                state = 0;
+            }
+        }
+        else if (state == 2) {
+            if (rx_idx < sizeof(rx_buf) - 1)
+                rx_buf[rx_idx++] = ch;
+
+            if (rx_idx >= want) {
+                /* 解析 PUBLISH 包：
+                   首字节已跳过(0x3X)，第二字节是剩余长度(=want)
+                   然后: topic_len(2) + topic + payload
+                */
+                uint16_t p = 0;
+                uint16_t tlen = ((uint16_t)rx_buf[p] << 8) | rx_buf[p+1]; p += 2;
+                const char *topic    = (const char *)(rx_buf + p);      p += tlen;
+                const char *payload  = (const char *)(rx_buf + p);
+                uint16_t   plen      = want - 2 - tlen;
+                rx_buf[p + plen] = '\0';   /* 确保 payload 末尾 0 终止 */
+
+                U1_PRINTF("[MQTT] rx PUBLISH topic=%s payload=%.32s\r\n",
+                          topic, payload);
+
+                /* 如果是 home/light/cmd，回调 main.c */
+                if (strcmp(topic, MQTT_TOPIC_CMD) == 0) {
+                    if (MQTT_OnCmdReceived) MQTT_OnCmdReceived(payload);
+                }
+
+                state = 0;
+            }
+        }
+    }
+}
+
+// 原巴法云实现（已下线，保留供参考）
+#if 0  /* 巴法云已下线，保留供参考 */
+
 uint8_t ESP8266_BemfaConnect(void)
 {
     U1_PRINTF("[BEMFA] Closing old socket...\r\n");
@@ -403,9 +794,6 @@ uint8_t ESP8266_BemfaConnect(void)
     return ESP8266_BemfaSubscribe();
 }
 
-/**
-  * @brief  Subscribe topic: cmd=1
-  */
 uint8_t ESP8266_BemfaSubscribe(void)
 {
     char cmd[128];
@@ -414,9 +802,6 @@ uint8_t ESP8266_BemfaSubscribe(void)
     return ESP8266_SendTCP((uint8_t *)cmd, (uint16_t)strlen(cmd));
 }
 
-/**
-  * @brief  Publish message: cmd=2
-  */
 uint8_t ESP8266_BemfaPublish(const char *msg)
 {
     char cmd[192];
@@ -428,200 +813,14 @@ uint8_t ESP8266_BemfaPublish(const char *msg)
     return ESP8266_SendTCP((uint8_t *)cmd, (uint16_t)len);
 }
 
-/**
-  * @brief  Heartbeat: ping
-  */
 uint8_t ESP8266_BemfaHeartbeat(void)
 {
     const char *cmd = "ping\r\n";
     return ESP8266_SendTCP((uint8_t *)cmd, (uint16_t)strlen(cmd));
 }
 
-/**
-  * @brief  在 HTTP 响应里搜索 JSON 字段值
-  */
-static uint16_t HTTP_FindField(const uint8_t *buf, uint16_t buf_len,
-                               const char *field, char *out, uint16_t max_len)
-{
-    uint16_t flen = strlen(field);
-    uint16_t i, j;
-    uint16_t out_i = 0;
+#endif  /* 巴法云代码块结束 */
 
-    for (i = 0; i + flen < buf_len; i++)
-    {
-        if (memcmp(buf + i, field, flen) != 0) continue;
-
-        j = i + flen;
-
-        /* 支持 JSON 中 "datetime": 和 datetime: 两种写法 */
-        if (buf[j] == '"') {
-            if (j + 1 >= buf_len || buf[j + 1] != ':') continue;
-            j += 2;
-        } else if (buf[j] == ':') {
-            j++;
-        } else {
-            continue;
-        }
-
-        while (j < buf_len && (buf[j] == ' ' || buf[j] == '"')) j++;
-        out_i = 0;
-        while (j < buf_len && out_i < max_len - 1 &&
-               buf[j] != '"' && buf[j] != ',' && buf[j] != '}')
-        {
-            out[out_i++] = buf[j];
-            j++;
-        }
-        out[out_i] = '\0';
-        return out_i;
-    }
-    return 0;
-}
-
-#if 0  /* HTTP 时间同步已被 NTP 取代，保留代码供参考 */
-/**
-  * @brief  通过 HTTP API 获取网络时间（UTC+8）
-  * @retval 1=成功，0=失败
-  */
-uint8_t ESP8266_GetHTTPTime(RTC_DateTime_t *dt)
-{
-    uint8_t http_req[256];
-    uint8_t http_resp[600];
-    int16_t resp_len;
-    char datetime[32];
-    int y, mo, d, h, mi, s;
-    uint16_t req_len;
-    uint16_t dbg_len;
-    uint32_t dbg_to;
-    uint8_t success = 0;
-    uint8_t retry;
-    uint8_t ch;
-
-    if (!dt) return 0;
-    memset(dt, 0, sizeof(RTC_DateTime_t));
-
-    U1_PRINTF("[HTTP] Getting time...\r\n");
-
-    /* 1. 彻底关闭所有连接；无连接时 ESP 返回 ERROR 也接受 */
-    ESP8266_SendAT("AT+CIPCLOSE\r\n", NULL, 0);
-    delay_ms(400);
-    ESP8266_SendAT("AT+CIPCLOSE\r\n", NULL, 0);
-    delay_ms(400);
-    while (USART3_GetByte(&ch)) { }
-
-    /* 2. 确保 CIPMUX=0 单连接模式，重试 3 次 */
-    for (retry = 0; retry < 3; retry++) {
-        if (ESP8266_SendAT("AT+CIPMUX=0\r\n", "OK", 2000)) {
-            U1_PRINTF("[HTTP] CIPMUX=0 OK (retry=%d)\r\n", retry);
-            break;
-        }
-        U1_PRINTF("[HTTP] CIPMUX=0 retry %d/3\r\n", retry + 1);
-        delay_ms(500);
-        while (USART3_GetByte(&ch)) { }
-    }
-    if (retry >= 3) {
-        U1_PRINTF("[HTTP] CIPMUX=0 failed after retries\r\n");
-        goto restore_udp;
-    }
-    delay_ms(200);
-
-    /* 3. 用 IP 直接连 TCP 80，绕过 ESP8266 不稳定的内置 DNS */
-    U1_PRINTF("[HTTP] connecting TCP %s:80 ...\r\n", ESP8266_HTTP_TIME_IP);
-    {
-        char cmd[128];
-        sprintf(cmd, "AT+CIPSTART=\"TCP\",\"%s\",80\r\n", ESP8266_HTTP_TIME_IP);
-        if (!ESP8266_SendAT(cmd, "OK", 15000))
-        {
-            U1_PRINTF("[HTTP] TCP connect FAIL (timeout or busy)\r\n");
-            goto restore_udp;
-        }
-    }
-    U1_PRINTF("[HTTP] TCP connected\r\n");
-    delay_ms(1000);
-
-    /* 4. 构造 HTTP GET，Host 头用域名 */
-    req_len = snprintf((char *)http_req, sizeof(http_req),
-        "GET %s HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "Connection: close\r\n"
-        "\r\n",
-        ESP8266_HTTP_TIME_PATH, ESP8266_HTTP_TIME_HOST);
-    U1_PRINTF("[HTTP] sending GET %s (%d bytes)\r\n", ESP8266_HTTP_TIME_PATH, req_len);
-    if (!ESP8266_SendTCP(http_req, req_len))
-    {
-        U1_PRINTF("[HTTP] send failed\r\n");
-        goto restore_udp;
-    }
-
-    /* 5. 接收响应 */
-    U1_PRINTF("[HTTP] waiting response...\r\n");
-    resp_len = ESP8266_Receive(http_resp, sizeof(http_resp), 10000);
-    U1_PRINTF("[HTTP] got %d bytes\r\n", resp_len);
-    if (resp_len < 80)
-    {
-        dbg_len = 0;
-        dbg_to = 3000;
-
-        U1_PRINTF("[HTTP] response too short, dump raw 3s...\r\n");
-        while (dbg_to-- && dbg_len < sizeof(http_resp) - 1)
-        {
-            if (USART3_GetByte(&http_resp[dbg_len]))
-            {
-                dbg_len++;
-            }
-            else
-            {
-                delay_ms(1);
-            }
-        }
-        http_resp[dbg_len] = 0;
-        U1_PRINTF("[HTTP] raw %d bytes: %.300s\r\n", dbg_len, http_resp);
-        goto restore_udp;
-    }
-
-    /* 6. 搜索 currentDateTime 字段（自动兼容 JSON 引号） */
-    if (HTTP_FindField(http_resp, resp_len, "currentDateTime", datetime, sizeof(datetime)) == 0)
-    {
-        U1_PRINTF("[HTTP] currentDateTime field not found\r\n");
-        http_resp[resp_len > 200 ? 200 : resp_len] = 0;
-        U1_PRINTF("[HTTP] head: %.200s\r\n", http_resp);
-        goto restore_udp;
-    }
-
-    U1_PRINTF("[HTTP] currentDateTime=%s\r\n", datetime);
-
-    /* 7. 解析 ISO 8601 UTC 时间，转 UTC+8
-       worldclockapi 格式示例：2026-09-09T01:54Z（无秒）
-       也兼容带秒格式：2026-09-09T01:54:30Z */
-    s = 0;
-    if (sscanf(datetime, "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &s) < 5)
-    {
-        U1_PRINTF("[HTTP] parse failed\r\n");
-        goto restore_udp;
-    }
-    h += ESP8266_TIMEZONE_HOUR;
-    if (h >= 24) { h -= 24; d++; }
-
-    dt->Year   = (uint8_t)(y - 2000);
-    dt->Month  = (uint8_t)mo;
-    dt->Date   = (uint8_t)d;
-    dt->Hours  = (uint8_t)h;
-    dt->Minutes= (uint8_t)mi;
-    dt->Seconds= (uint8_t)s;
-    dt->WeekDay= 1;
-    success = 1;
-
-    U1_PRINTF("[HTTP] OK: 20%02d-%02d-%02d %02d:%02d:%02d\r\n",
-              dt->Year, dt->Month, dt->Date,
-              dt->Hours, dt->Minutes, dt->Seconds);
-
-restore_udp:
-    while (USART3_GetByte(&ch)) { }
-    ESP8266_SendAT("AT+CIPCLOSE\r\n", NULL, 0);
-    delay_ms(300);
-    ESP8266_ConnectUDP(ESP8266_UDP_SERVER_IP, ESP8266_UDP_SERVER_PORT);
-    return success;
-}
-#endif
 
 /**
   * @brief  Unix 时间戳转日期时间（纯整数运算，不依赖 localtime）
@@ -929,11 +1128,16 @@ uint8_t ESP8266_CheckHealth(void)
         return 1;
     }
 
-    /* 2. 模块活着但连续发送失败 → 重建 UDP 连接 */
+    /* 2. 模块活着但连续发送失败 → 重建 MQTT（TCP + CONNECT + SUBSCRIBE） */
     if (s_send_fail_count >= 3)
     {
+#if USE_MQTT
+        U1_PRINTF("[ESP8266] %d send fails, reconnecting MQTT...\r\n", s_send_fail_count);
+        if (ESP8266_MQTTConnect()) ESP8266_MQTTSubscribe();
+#else
         U1_PRINTF("[ESP8266] %d send fails, reconnecting UDP...\r\n", s_send_fail_count);
         ESP8266_ConnectUDP(ESP8266_UDP_SERVER_IP, ESP8266_UDP_SERVER_PORT);
+#endif
         s_send_fail_count = 0;
     }
 

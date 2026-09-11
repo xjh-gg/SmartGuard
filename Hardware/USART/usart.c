@@ -32,7 +32,7 @@ static volatile uint16_t usart2_rx_tail = 0;
 /* Printf 临时缓冲区（每个串口独立，避免并发调用时数据交叉） */
 static char printf_buf1[128];
 static char printf_buf2[128];
-static char printf_buf3[128];
+// static char printf_buf3[128];  /* 已删除：USART3 未使用 */
 
 /**
   * @brief  初始化 USART1
