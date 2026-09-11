@@ -23,7 +23,7 @@
 
 /* ========== WiFi 配置（使用前按实际环境修改） ========== */
 #define ESP8266_WIFI_SSID       "LAPTOP-KNLKBLMS 0997"
-#define ESP8266_WIFI_PASSWORD   "6Z5{58n8"
+#define ESP8266_WIFI_PASSWORD   "06142890"
 
 /* ========== UDP 目标服务器（用于数据上报和告警） ========== */
 #define ESP8266_UDP_SERVER_IP   "192.168.137.1"   /* 电脑热点网关 IP */
@@ -61,5 +61,17 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt);        /* NTP/UDP 方式获取�
 uint8_t ESP8266_CheckInternet(void);
 uint8_t ESP8266_CheckHealth(void);
 uint8_t ESP8266_IsWiFiOk(void);        /* 返回 WiFi 连接状态，供 OLED 状态栏使用 */
+
+/* ========== 巴法云 TCP 配置 ========== */
+#define USE_BEMFA             1
+#define BEMFA_SERVER          "tcp.bemfa.com"
+#define BEMFA_PORT            8344
+#define BEMFA_UID             "97e9efdbfb4c4b869481d3df7812e1ce"
+#define BEMFA_TOPIC           "SmartGuard"
+
+uint8_t ESP8266_BemfaConnect(void);
+uint8_t ESP8266_BemfaSubscribe(void);
+uint8_t ESP8266_BemfaPublish(const char *msg);
+uint8_t ESP8266_BemfaHeartbeat(void);
 
 #endif /* __ESP8266_H__ */
