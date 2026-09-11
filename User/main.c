@@ -1,4 +1,4 @@
-/**
+﻿/**
   * @file    main.c
   * @brief   SmartGuard v0.4 — 智能空间守护 Agent
   *
@@ -49,6 +49,7 @@
 
 #if USE_ESP8266
 #include "esp8266.h"
+#include <string.h>      /* strcmp for MQTT_OnCmdReceived */
 #endif
 
 #if USE_ESP32_CAM
@@ -119,6 +120,27 @@ static float   s_gyro_zero_gx = 0.0f;
 static float   s_gyro_zero_gy = 0.0f;
 static float   s_gyro_zero_gz = 0.0f;
 static uint8_t s_tamper_hit_count = 0;  /* 连续触发计数，≥2 才告警 */
+
+/* ============ MQTT 回调（替代原巴法云） ============ */
+static uint32_t s_mqtt_last_ping_tick = 0;
+
+/* ESP8266 下行控制指令回调：收到 home/light/cmd 的 PUBLISH 时调用 */
+void MQTT_OnCmdReceived(const char *payload)
+{
+    if (strcmp(payload, "on") == 0) {
+        LED_ON(0);
+        USART1_Printf("[MQTT] CMD=on\n");
+    }
+    else if (strcmp(payload, "off") == 0) {
+        LED_OFF(0);
+        USART1_Printf("[MQTT] CMD=off\n");
+    }
+    else {
+        USART1_Printf("[MQTT] unknown CMD: %s\n", payload);
+    }
+    /* 状态改变后上报 */
+    ESP8266_MQTTPublish(MQTT_TOPIC_STATUS, payload);
+}
 
 /* ============ 硬件初始化 ============ */
 static void Hardware_InitAll(void)
@@ -408,11 +430,15 @@ int main(void)
     }
     USART1_SendString("[RTC] NTP call returned\r\n");
 
-    #if USE_BEMFA
+    #if USE_MQTT
         /* GetNTPTime internally does AT+CIPCLOSE and reopens UDP.
-           Reconnect Bemfa TCP link, otherwise data goes nowhere. */
-        if (!ESP8266_BemfaConnect())
-            USART1_Printf("[BEMFA] Reconnect after NTP failed\r\n");
+           Reconnect MQTT TCP link, otherwise data goes nowhere. */
+        if (!ESP8266_MQTTConnect())
+            USART1_Printf("[MQTT] Reconnect after NTP failed\n");
+        else if (!ESP8266_MQTTSubscribe())
+            USART1_Printf("[MQTT] Resubscribe after NTP failed\n");
+        else
+            s_mqtt_last_ping_tick = 0;   /* 重连成功，心跳计时从零开始 */
     #endif
 #endif
 
@@ -465,16 +491,25 @@ int main(void)
     uint32_t loop_tick = 0;
 
     while (1) {
+#if USE_MQTT
+        ESP8266_MQTTProcessRx();   /* 主循环每次都调，处理下行 PUBLISH */
+#endif
         delay_ms(100);
         loop_tick++;
 
-    #if USE_BEMFA
+    #if USE_MQTT
         if (loop_tick % 100 == 0) {   /* 100 x 100ms = 10 seconds */
-            char bemfa_msg[64];
-            sprintf(bemfa_msg, "T=%.0f,H=%.0f,D=%.0f,L=%d",
+            char mqtt_msg[64];
+            sprintf(mqtt_msg, "T=%.0f,H=%.0f,D=%.0f,L=%d",
                     g_sensor.temperature, g_sensor.humidity,
                     g_sensor.distance, g_sensor.light_adc);
-            ESP8266_BemfaPublish(bemfa_msg);
+            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, mqtt_msg);
+        }
+
+        /* MQTT 心跳 PINGREQ：每 MQTT_KEEPALIVE_SEC / 2 秒发一次 */
+        if (loop_tick - s_mqtt_last_ping_tick >= MQTT_KEEPALIVE_SEC * 10 / 2) {
+            ESP8266_MQTTPing();
+            s_mqtt_last_ping_tick = loop_tick;
         }
     #endif
 
@@ -507,15 +542,15 @@ int main(void)
                         LED_Toggle(1);
 
 #if USE_ESP8266
-    #if USE_BEMFA
+    #if USE_MQTT
                         if (effective == ALERT_INTRUSION)
-                            ESP8266_BemfaPublish("ALERT:Intrusion!");
+                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Intrusion!");
                         else if (effective == ALERT_FIRE)
-                            ESP8266_BemfaPublish("ALERT:Fire!");
+                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Fire!");
                         else if (effective == ALERT_TAMPER)
-                            ESP8266_BemfaPublish("ALERT:Tamper!");
+                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Tamper!");
                         else
-                            ESP8266_BemfaPublish("ALERT:EnvAbnormal!");
+                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:EnvAbnormal!");
     #else
                         if (effective == ALERT_INTRUSION)
                             ESP8266_SendAlert("Intrusion!");
