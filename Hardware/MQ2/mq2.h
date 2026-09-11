@@ -1,4 +1,4 @@
-#ifndef __MQ2_H
+﻿#ifndef __MQ2_H
 #define __MQ2_H
 
 #include "stm32f4xx.h"
