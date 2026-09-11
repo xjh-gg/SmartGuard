@@ -407,6 +407,13 @@ int main(void)
         }
     }
     USART1_SendString("[RTC] NTP call returned\r\n");
+
+    #if USE_BEMFA
+        /* GetNTPTime internally does AT+CIPCLOSE and reopens UDP.
+           Reconnect Bemfa TCP link, otherwise data goes nowhere. */
+        if (!ESP8266_BemfaConnect())
+            USART1_Printf("[BEMFA] Reconnect after NTP failed\r\n");
+    #endif
 #endif
 
     /* 同步初始模式到决策引擎 */
@@ -461,6 +468,16 @@ int main(void)
         delay_ms(100);
         loop_tick++;
 
+    #if USE_BEMFA
+        if (loop_tick % 100 == 0) {   /* 100 x 100ms = 10 seconds */
+            char bemfa_msg[64];
+            sprintf(bemfa_msg, "T=%.0f,H=%.0f,D=%.0f,L=%d",
+                    g_sensor.temperature, g_sensor.humidity,
+                    g_sensor.distance, g_sensor.light_adc);
+            ESP8266_BemfaPublish(bemfa_msg);
+        }
+    #endif
+
         /* 每 2s 采集 + 决策 */
         if (loop_tick % 20 == 0) {
             SampleAllSensors();
@@ -490,6 +507,16 @@ int main(void)
                         LED_Toggle(1);
 
 #if USE_ESP8266
+    #if USE_BEMFA
+                        if (effective == ALERT_INTRUSION)
+                            ESP8266_BemfaPublish("ALERT:Intrusion!");
+                        else if (effective == ALERT_FIRE)
+                            ESP8266_BemfaPublish("ALERT:Fire!");
+                        else if (effective == ALERT_TAMPER)
+                            ESP8266_BemfaPublish("ALERT:Tamper!");
+                        else
+                            ESP8266_BemfaPublish("ALERT:EnvAbnormal!");
+    #else
                         if (effective == ALERT_INTRUSION)
                             ESP8266_SendAlert("Intrusion!");
                         else if (effective == ALERT_FIRE)
@@ -498,6 +525,7 @@ int main(void)
                             ESP8266_SendAlert("Tamper!");
                         else
                             ESP8266_SendAlert("EnvAbnormal!");
+    #endif
 #endif
 
 #if USE_ESP32_CAM

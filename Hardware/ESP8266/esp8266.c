@@ -47,6 +47,10 @@ uint8_t ESP8266_Init(void)
         return 0;   /* WiFi 连接失败 */
     }
 
+#if USE_BEMFA
+    if (!ESP8266_BemfaConnect())
+        U1_PRINTF("[BEMFA] Init FAIL, CheckHealth will retry\r\n");
+#else
     /* 3. 建立 UDP 连接到电脑（用于推告警） */
     U1_PRINTF("[...] ESP8266 connecting UDP to %s:%d...\r\n",
               ESP8266_UDP_SERVER_IP, ESP8266_UDP_SERVER_PORT);
@@ -58,6 +62,7 @@ uint8_t ESP8266_Init(void)
     {
         U1_PRINTF("[FAIL] ESP8266 UDP connect failed\r\n");
     }
+#endif
 
     return 1;   /* WiFi 已连上，UDP 失败不阻塞主流程 */
 }
@@ -353,6 +358,60 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
     /* 给 ESP8266 时间把数据发出去，并等 SEND OK 一闪而过 */
     delay_ms(800);
     return 1;
+}
+
+/**
+  * @brief  Connect to Bemfa TCP server and subscribe topic
+  * @retval 1=OK, 0=FAIL
+  */
+uint8_t ESP8266_BemfaConnect(void)
+{
+    U1_PRINTF("[BEMFA] Closing old socket...\r\n");
+    ESP8266_SendAT("AT+CIPCLOSE\r\n", "OK", 2000);
+    delay_ms(500);
+
+    U1_PRINTF("[BEMFA] Connecting %s:%d\r\n", BEMFA_SERVER, BEMFA_PORT);
+    if (!ESP8266_ConnectTCP(BEMFA_SERVER, BEMFA_PORT)) {
+        U1_PRINTF("[BEMFA] Connect FAIL\r\n");
+        return 0;
+    }
+    U1_PRINTF("[BEMFA] TCP OK, subscribing...\r\n");
+    delay_ms(500);
+    return ESP8266_BemfaSubscribe();
+}
+
+/**
+  * @brief  Subscribe topic: cmd=1
+  */
+uint8_t ESP8266_BemfaSubscribe(void)
+{
+    char cmd[128];
+    sprintf(cmd, "cmd=1&uid=%s&topic=%s\r\n", BEMFA_UID, BEMFA_TOPIC);
+    U1_PRINTF("[BEMFA] Sub topic=%s\r\n", BEMFA_TOPIC);
+    return ESP8266_SendTCP((uint8_t *)cmd, (uint16_t)strlen(cmd));
+}
+
+/**
+  * @brief  Publish message: cmd=2
+  */
+uint8_t ESP8266_BemfaPublish(const char *msg)
+{
+    char cmd[192];
+    int len;
+    if (msg == 0) return 0;
+    len = sprintf(cmd, "cmd=2&uid=%s&topic=%s&msg=%s\r\n",
+                  BEMFA_UID, BEMFA_TOPIC, msg);
+    if (len <= 0 || len >= (int)sizeof(cmd)) return 0;
+    return ESP8266_SendTCP((uint8_t *)cmd, (uint16_t)len);
+}
+
+/**
+  * @brief  Heartbeat: ping
+  */
+uint8_t ESP8266_BemfaHeartbeat(void)
+{
+    const char *cmd = "ping\r\n";
+    return ESP8266_SendTCP((uint8_t *)cmd, (uint16_t)strlen(cmd));
 }
 
 /**
