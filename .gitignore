@@ -61,6 +61,7 @@ Thumbs.db
 
 # Temporary and test files
 test_image.jpg
+test_image/
 *.log
 
 # Backup files
