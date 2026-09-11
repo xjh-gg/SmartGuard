@@ -172,7 +172,12 @@ void AT_Update(uint16_t light, uint16_t mq2, float temp, float humi)
         s_bl.mq2_ewma   += AT_EWMA_ALPHA * diff_mq2;
         /* 基线学习时已禁用（threshold=0xFFFF）时保持禁用，不要覆盖 */
         if (s_bl.mq2_fire_threshold != 0xFFFF) {
-            s_bl.mq2_fire_threshold = (uint16_t)(s_bl.mq2_ewma + (float)AT_SIGMA_K * (float)s_bl.mq2_sigma);
+            /* 必须与基线学习期保持同一语义：阈值 = max(ewma + k*sigma, 400)。
+               漏掉 400 下限时，安静环境下 ewma≈180、sigma≈7 会把阈值压到 ~201，
+               而 2*sigma 吸收门（上面那个 if）又不让 203 这类值更新 ewma，
+               于是阈值钉死在 201，MQ-2 自然抖动跨线就反复误报火灾。 */
+            uint16_t calc = (uint16_t)(s_bl.mq2_ewma + (float)AT_SIGMA_K * (float)s_bl.mq2_sigma);
+            s_bl.mq2_fire_threshold = calc > 400 ? calc : 400;
         }
     }
 

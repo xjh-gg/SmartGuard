@@ -10,7 +10,11 @@ void KEY_Init(void)
 	
 	myGPIO.GPIO_Pin = GPIO_Pin_0;
 	myGPIO.GPIO_Mode = GPIO_Mode_IN;
-	myGPIO.GPIO_PuPd = GPIO_PuPd_NOPULL;
+	/* 四个按键（PA0/PE2/PE3/PE4）都是低电平有效，必须有个上拉把空闲态钉在 3.3V。
+	   原来配 NOPULL 完全依赖板外部上拉，缺一个或阻值偏高就会浮空，被主循环 100ms
+	   采样读成随机低电平 → 制造伪边沿 → 一次按压多次触发。内部上拉约 40kΩ，
+	   与外部上拉并联无害。 */
+	myGPIO.GPIO_PuPd = GPIO_PuPd_UP;
 	GPIO_Init(GPIOA, &myGPIO);
 	
 	myGPIO.GPIO_Pin = GPIO_Pin_2|GPIO_Pin_3|GPIO_Pin_4;
