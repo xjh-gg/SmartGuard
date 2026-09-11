@@ -355,9 +355,32 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
     for (i = 0; i < len; i++) USART3_SendByte(data[i]);
     U1_PRINTF("[ESP8266] sent %d bytes\r\n", len);
 
-    /* 给 ESP8266 时间把数据发出去，并等 SEND OK 一闪而过 */
-    delay_ms(800);
-    return 1;
+    /* Read SEND OK from ESP8266, else next AT+CIPSEND will be rejected */
+    {
+        uint8_t  ok_buf[64] = {0};
+        uint16_t ok_idx = 0;
+        uint16_t ok_timeout = 2000;
+        while (ok_timeout--) {
+            while (USART3_GetByte(&ch)) {
+                if (ok_idx < sizeof(ok_buf) - 1) {
+                    ok_buf[ok_idx++] = ch;
+                    ok_buf[ok_idx]   = '\0';
+                }
+            }
+            if (strstr((char *)ok_buf, "SEND OK")) {
+                return 1;
+            }
+            if (strstr((char *)ok_buf, "ERROR") ||
+                strstr((char *)ok_buf, "SEND FAIL")) {
+                U1_PRINTF("[ESP8266] CIPSEND rejected: %s\r\n", ok_buf);
+                return 0;
+            }
+            IWDG_Feed();
+            delay_ms(1);
+        }
+        U1_PRINTF("[ESP8266] no SEND OK, got: %s\r\n", ok_buf);
+        return 0;
+    }
 }
 
 /**
