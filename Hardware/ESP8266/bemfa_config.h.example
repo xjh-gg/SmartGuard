@@ -1,0 +1,8 @@
+﻿#ifndef __BEMFA_CONFIG_H__
+#define __BEMFA_CONFIG_H__
+
+/* 巴法云凭据 - 此文件不入库，见 bemfa_config.h.example */
+#define BEMFA_UID    "your-bemfa-uid-here"
+#define BEMFA_TOPIC  "your-bemfa-topic-here"
+
+#endif /* __BEMFA_CONFIG_H__ */

@@ -21,6 +21,7 @@
 #include "stm32f4xx.h"
 #include "rtc.h"
 #include "wifi_config.h"
+#include "bemfa_config.h"
 
 /* ========== WiFi 配置 ==========
  * SSID 与密码不在本文件（本文件入 git）。它们外置在同目录的 wifi_config.h，
@@ -73,11 +74,10 @@ uint8_t ESP8266_IsWiFiOk(void);        /* 返回 WiFi 连接状态，供 OLED �
 #define MQTT_KEEPALIVE_SEC    60
 
 /* ---------- 原巴法云配置（已下线，保留供参考） ----------
+ * UID/TOPIC 已外置到同目录 bemfa_config.h（该文件不入库，模板见 bemfa_config.h.example）。
 #define USE_BEMFA             1
 #define BEMFA_SERVER          "tcp.bemfa.com"
 #define BEMFA_PORT            8344
-#define BEMFA_UID             "REDACTED_BEMFA_UID"
-#define BEMFA_TOPIC           "light001"
 uint8_t ESP8266_BemfaConnect(void);
 uint8_t ESP8266_BemfaSubscribe(void);
 uint8_t ESP8266_BemfaPublish(const char *msg);

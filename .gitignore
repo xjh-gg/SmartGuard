@@ -113,3 +113,6 @@ docs/logs/
 
 # WiFi 凭据外置：真实值不入库，模板见 wifi_config.h.example
 Hardware/ESP8266/wifi_config.h
+
+# 巴法云凭据外置：真实值不入库，模板见 bemfa_config.h.example
+Hardware/ESP8266/bemfa_config.h
