@@ -110,3 +110,6 @@ v1_train/sensor_data_backup.csv
 
 # 归档目录
 docs/logs/
+
+# WiFi 凭据外置：真实值不入库，模板见 wifi_config.h.example
+Hardware/ESP8266/wifi_config.h

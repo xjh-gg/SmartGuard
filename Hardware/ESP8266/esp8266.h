@@ -20,10 +20,14 @@
 
 #include "stm32f4xx.h"
 #include "rtc.h"
+#include "wifi_config.h"
 
-/* ========== WiFi 配置（使用前按实际环境修改） ========== */
-#define ESP8266_WIFI_SSID       "REDACTED_WIFI_SSID"
-#define ESP8266_WIFI_PASSWORD   "06142890"
+/* ========== WiFi 配置 ==========
+ * SSID 与密码不在本文件（本文件入 git）。它们外置在同目录的 wifi_config.h，
+ * 该文件已列入 .gitignore，只存在于本地工作区。
+ * 新克隆后需复制 wifi_config.h.example 为 wifi_config.h 并填真实值，否则编译不过。
+ * 代码里使用的外置宏：WIFI_SSID / WIFI_PASSWORD
+ * ====================================== */
 
 /* ========== UDP 目标服务器（用于数据上报和告警） ========== */
 #define ESP8266_UDP_SERVER_IP   "192.168.137.1"   /* 电脑热点网关 IP */

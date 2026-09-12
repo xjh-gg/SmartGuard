@@ -1,0 +1,22 @@
+﻿/**
+  ******************************************************************************
+  * @file    wifi_config.h.example
+  * @brief   WiFi 凭据配置模板（入库）
+  *
+  * esp8266.h 会 #include "wifi_config.h"，而 wifi_config.h 已列入 .gitignore，
+  * 目的是让 SSID 和密码不进 commit 历史。
+  *
+  * 新克隆仓库后必须执行：
+  *   copy Hardware\ESP8266\wifi_config.h.example Hardware\ESP8266\wifi_config.h
+  * 然后把下面两个宏填成实际环境的值，否则工程编译不过。
+  *
+  * 注意：本文件是纯文本模板，Keil 不参与编译，也不会被任何源文件 include。
+  ******************************************************************************
+  */
+#ifndef __WIFI_CONFIG_H__
+#define __WIFI_CONFIG_H__
+
+#define WIFI_SSID       "your-ssid-here"
+#define WIFI_PASSWORD   "your-password-here"
+
+#endif /* __WIFI_CONFIG_H__ */
