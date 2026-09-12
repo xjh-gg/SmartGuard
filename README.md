@@ -35,7 +35,7 @@
 |---|---|---|---|
 | SSD1306 0.96" OLED | SCLK PB0 / DC PB1 / MOSI PF11 / CS PC13 | 软件 SPI | ✅ 英文界面 |
 | DHT11 温湿度 | PG9 | 单总线 | ✅ 2s 节流 |
-| MQ-2 烟雾 | PA4 / ADC1_IN4 | ADC | ⚠️ 现 3.3V 供电，手册推荐 5V |
+| MQ-2 烟雾 | PA4 / ADC1_IN4 | ADC | ✅ VCC 5V，安静环境基线 ~180 |
 | 光敏电阻 | PF7 / ADC3_IN5 | ADC | ✅ 光越强 ADC 越小 |
 | HC-SR04 测距 | TRIG PC8 / ECHO PC6 | TIM8 输入捕获 | ✅ 30ms 超时返回 0 |
 | MPU6050 | SCL PB8 / SDA PB9 | 软件 I2C | ✅ 防拆/震动 |
