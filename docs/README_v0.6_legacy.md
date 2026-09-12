@@ -577,7 +577,7 @@ void ESP8266_SendData(const char *topic, const char *payload);
 
 ```c
 #define ESP8266_WIFI_SSID       "<your-ssid> 0997"
-#define ESP8266_WIFI_PASSWORD   "6Z5{58n8"
+#define ESP8266_WIFI_PASSWORD   "<redacted-password>"
 #define ESP8266_UDP_SERVER_IP   "192.168.137.1"
 #define ESP8266_UDP_SERVER_PORT 12345
 #define ESP8266_USART_BAUD      115200
@@ -701,7 +701,7 @@ BOOT OK  Mode: HOME
 
 ```c
 #define ESP8266_WIFI_SSID       "你的WiFi名（注意有没有空格！）"
-#define ESP8266_WIFI_PASSWORD   "你的WiFi密码"
+#define ESP8266_WIFI_PASSWORD   "<redacted-password>"
 #define ESP8266_UDP_SERVER_IP   "192.168.137.1"   // 电脑的局域网 IP（ipconfig 查）
 #define ESP8266_UDP_SERVER_PORT 12345
 ```
