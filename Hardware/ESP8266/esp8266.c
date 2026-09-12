@@ -81,8 +81,8 @@ uint8_t ESP8266_Init(void)
     }
 
     /* 3. 连接 WiFi */
-    U1_PRINTF("[ESP] connecting WiFi SSID=\"%s\"...\r\n", ESP8266_WIFI_SSID);
-    if (!ESP8266_ConnectAP(ESP8266_WIFI_SSID, ESP8266_WIFI_PASSWORD))
+    U1_PRINTF("[ESP] connecting WiFi SSID=\"%s\"...\r\n", WIFI_SSID);
+    if (!ESP8266_ConnectAP(WIFI_SSID, WIFI_PASSWORD))
     {
         U1_PRINTF("[ESP] WiFi connect FAIL\r\n");
         return 0;
