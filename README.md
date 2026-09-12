@@ -146,7 +146,7 @@ mosquitto_sub -h 192.168.137.1 -p 1883 -t 'home/#' -v
 7. **引脚复用冲突**：PF9 同时是 LED0 与 TIM14 PWM，PE14 同时是 LED3 与 TIM1 PWM，PC13 同时是 OLED CS 与 RTC 输出。叠加上面那张 LED 错位表，`LED_ON(n)` 必须先换算成实际引脚再下结论。
 8. **`AT_TEMP_RISE_PER_MIN`（`adaptive_threshold.h:30`）是死宏**，零引用，升温速率检测未实现。
 9. **MQ-2 驱动未接线**：`MQ2_Init/MQ2_Read` 无调用点，遥测实际走 `ADC_ReadMQ2()`。
-10. **WiFi 凭证明文硬编码**（`esp8266.h:25-26`）且已进入 git 历史；仓库若公开必须改。
+10. **凭据已外置但 git 历史仍含旧明文**：WiFi 凭据与巴法云 UID/TOPIC 均已外置到 gitignored 的 `wifi_config.h` / `bemfa_config.h`（模板见各自 `.example`），但 `esp8266.h` 与 `docs/README_v0.6_legacy.md` 的历史版本、以及 `origin/master` 仍含旧明文，公开仓库前必须处理；凭据已轮换。
 11. **注释滞后于代码**：`decision_engine.h:8` 写 OLED 用 PB3/PB5/PB9，实际 PB0/PF11/PC13 且 PB9 是软件 I2C SDA；`iwdg.h:17` 写 1s，实际 2s；启动横幅打印 `v0.4`。
 
 ## 版本记录
