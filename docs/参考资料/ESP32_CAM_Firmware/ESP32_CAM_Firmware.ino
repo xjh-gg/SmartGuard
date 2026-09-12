@@ -32,7 +32,7 @@
 
 /* ============ WiFi 配置（和 ESP8266 连同一个路由器） ============ */
 const char *WIFI_SSID = "你的WiFi名称";
-const char *WIFI_PASS = "你的WiFi密码";
+const char *WIFI_PASS = "<redacted-password>";
 
 /* ============ 摄像头配置（AI Thinker ESP32-CAM 固定引脚） ============ */
 #define PWDN_GPIO_NUM     32
