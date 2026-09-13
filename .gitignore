@@ -91,6 +91,7 @@ oled_minimal.jpg
 
 # 一次性调试产物
 User/build_result.txt
+User/build_check.txt
 
 # Python 缓存
 __pycache__/
