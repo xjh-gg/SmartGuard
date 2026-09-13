@@ -42,6 +42,7 @@
 #include "oled.h"
 #include "iwdg.h"
 #include "config_store.h"
+#include <math.h>          /* fabsf：TamperUpdate 滑动窗口判定用 */
 
 #if USE_RTC
 #include "rtc.h"
@@ -112,6 +113,7 @@ static uint32_t      g_last_alarm_tick = 0;
 #if USE_OLED
 static char          s_time_buf[10] = "00:00:00";   /* 当前时间，OLED 状态栏用 */
 static const char   *s_wifi_status  = "N ";         /* 默认无 WiFi 图标 */
+static const char   *s_mqtt_status  = "M-";         /* MQTT 会话状态，主界面 Row 1 用 */
 static uint8_t       s_cam_ok       = 0;            /* ESP32-CAM 拍照结果 */
 #endif
 
@@ -119,7 +121,6 @@ static uint8_t       s_cam_ok       = 0;            /* ESP32-CAM 拍照结果 */
 static float   s_gyro_zero_gx = 0.0f;
 static float   s_gyro_zero_gy = 0.0f;
 static float   s_gyro_zero_gz = 0.0f;
-static uint8_t s_tamper_hit_count = 0;  /* 连续触发计数，≥2 才告警 */
 
 /* ============ MQTT 回调（替代原巴法云） ============ */
 static uint32_t s_mqtt_last_ping_tick = 0;
@@ -133,14 +134,26 @@ void MQTT_OnCmdReceived(const char *payload)
        全项目仅此处驱动，不会被告警灯逻辑（用 case 1 = PF9）覆盖。 */
     if (strcmp(payload, "on") == 0) {
         LED_ON(3);
-        USART1_Printf("[MQTT] CMD=on\n");
+        USART1_Printf("[MQTT] CMD=on\r\n");
     }
     else if (strcmp(payload, "off") == 0) {
         LED_OFF(3);
-        USART1_Printf("[MQTT] CMD=off\n");
+        USART1_Printf("[MQTT] CMD=off\r\n");
+    }
+    else if (strcmp(payload, "HOME") == 0) {
+        g_mode = MODE_HOME;  DecisionEngine_SetMode(g_mode);
+        USART1_Printf("[MQTT] CMD=HOME\r\n");
+    }
+    else if (strcmp(payload, "AWAY") == 0) {
+        g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode);
+        USART1_Printf("[MQTT] CMD=AWAY\r\n");
+    }
+    else if (strcmp(payload, "SLEEP") == 0) {
+        g_mode = MODE_SLEEP; DecisionEngine_SetMode(g_mode);
+        USART1_Printf("[MQTT] CMD=SLEEP\r\n");
     }
     else {
-        USART1_Printf("[MQTT] unknown CMD: %s\n", payload);
+        USART1_Printf("[MQTT] unknown CMD: %s\r\n", payload);
     }
     /* 状态改变后上报 */
     ESP8266_MQTTPublish(MQTT_TOPIC_STATUS, payload);
@@ -266,6 +279,61 @@ static float median3_f(float a, float b, float c) {
     return b;
 }
 
+/* ============ 防拆/震动检测（独立高频采样） ============ */
+/* 主循环每 200ms 调一次，是 g_sensor.tamper_flag 的唯一写入者。
+   原先与光敏/超声波共用 SampleAllSensors 的 2.1s 节拍，每 2.1s 只能观测到
+   一个瞬时角速度，凑满确认窗需持续摇晃 6s 以上，实际演示无法触发。 */
+static void TamperUpdate(void)
+{
+#if USE_MPU6050
+    float ax, ay, az, gx, gy, gz, t;
+    float gx_off, gy_off, gz_off;
+    uint8_t hit_now;
+    uint8_t hits = 0;
+    uint8_t hit = 0;
+    static uint16_t s_tamper_hold = 0;      /* 触发锁存：>0 期间强制 tamper_flag=1 */
+    static uint8_t  s_hit_hist[8] = {0};    /* 最近 8 次采样的命中环形历史 */
+    static uint8_t  s_hit_idx = 0;          /* 环形历史写入位置 */
+
+    MPU6050_GetPhysical(&ax, &ay, &az, &gx, &gy, &gz, &t);
+
+    /* 减去上电学到的零偏 */
+    gx_off = gx - s_gyro_zero_gx;
+    gy_off = gy - s_gyro_zero_gy;
+    gz_off = gz - s_gyro_zero_gz;
+
+    /* 滑动窗口判定（仅用陀螺仪，加速度计在部分 GY-521 模块上不稳定）：
+       任一根轴偏离零偏 > 8 dps 记一次命中，写入 8 格环形历史（8 × 0.2s = 1.6s 窗口），
+       窗口内命中 >= 3 次即触发。
+       取代原漏积计数器：摇晃波形常在阈值上下震荡，+1/-1 相互抵消使净漂移为负，计数永远爬不到门限
+       （12dps 阈值下实测 gz 峰值 23.3dps 却只有约 27% 命中率，故阈值下调到 8dps 把命中率抬到约 45%，
+       P(8 次里 >= 3 次命中) 从约 37% 升到约 75%）。 */
+    hit_now = ((fabsf(gx_off) > 8.0f) ||
+               (fabsf(gy_off) > 8.0f) ||
+               (fabsf(gz_off) > 8.0f)) ? 1 : 0;
+
+    s_hit_hist[s_hit_idx] = hit_now;
+    s_hit_idx = (s_hit_idx + 1) % 8;
+
+    for (uint8_t i = 0; i < 8; i++) {
+        hits += s_hit_hist[i];
+    }
+
+    hit = (hits >= 3) ? 1 : 0;
+
+    /* 锁存：触发事件本身只维持零点几秒，而决策引擎 2.2~2.3s 才读一次 tamper_flag，
+       纯电平信号会被漏采。展宽到 12 × 0.2s = 2.4s（大于引擎周期），保证至少被读到一次。 */
+    if (hit) s_tamper_hold = 12;
+
+    if (s_tamper_hold > 0) {
+        s_tamper_hold--;
+        g_sensor.tamper_flag = 1;
+    } else {
+        g_sensor.tamper_flag = 0;
+    }
+#endif
+}
+
 static void SampleAllSensors(void)
 {
     float temp = 0, humi = 0;
@@ -301,43 +369,6 @@ static void SampleAllSensors(void)
     g_sensor.temperature = temp;
     g_sensor.humidity    = humi;
     g_sensor.mq2_adc     = ADC_ReadMQ2();
-    g_sensor.tamper_flag = 0;
-
-#if USE_MPU6050
-    {
-        float ax, ay, az, gx, gy, gz, t;
-        float gx_off, gy_off, gz_off;
-        uint8_t hit = 0;
-
-        MPU6050_GetPhysical(&ax, &ay, &az, &gx, &gy, &gz, &t);
-
-        /* 减去零偏 */
-        gx_off = gx - s_gyro_zero_gx;
-        gy_off = gy - s_gyro_zero_gy;
-        gz_off = gz - s_gyro_zero_gz;
-
-        /* 防拆/震动判断：仅用陀螺仪（加速度计在部分 GY-521 模块上不稳定）
-           偏离零偏 > ±25 dps → 有人碰板子
-           必须连续 3 次触发才告警（防抖，约 6 秒） */
-        if ((gx_off >  25.0f || gx_off < -25.0f) ||
-            (gy_off >  25.0f || gy_off < -25.0f) ||
-            (gz_off >  25.0f || gz_off < -25.0f))
-        {
-            if (s_tamper_hit_count < 4) s_tamper_hit_count++;
-            if (s_tamper_hit_count >= 3) hit = 1;
-        }
-        else
-        {
-            if (s_tamper_hit_count > 0) s_tamper_hit_count--;
-        }
-
-        if (hit) {
-            g_sensor.tamper_flag = 1;
-            USART1_Printf("[TAMPER_DBG] ax=%.2f ay=%.2f az=%.2f gx=%.1f gy=%.1f gz=%.1f | off: gx=%.1f gy=%.1f gz=%.1f cnt=%d\r\n",
-                          ax, ay, az, gx, gy, gz, gx_off, gy_off, gz_off, s_tamper_hit_count);
-        }
-    }
-#endif
 
     /* AT 基线更新 */
     AT_Update(g_sensor.light_adc, g_sensor.mq2_adc, temp, humi);
@@ -385,9 +416,11 @@ static void HandleBoardKey(void)
     }
 
 #if USE_OLED
-    /* 按键后立即刷新 OLED 模式行，避免等 1 秒 tick (告警页时不覆盖) */
+    /* 按键后立即重绘主界面（Row 1 模式/时间/WiFi/MQTT），避免等 1 秒 tick。
+       告警页显示中时不覆盖；代价是一次整屏重绘约 50ms，仅按键时发生 */
     if (g_alert == ALERT_NONE) {
-        OLED_ShowMode(g_mode);
+        OLED_ShowHomeScreen(&g_sensor, g_mode, s_time_buf,
+                            s_wifi_status, s_mqtt_status);
     }
 #endif
 }
@@ -438,9 +471,9 @@ int main(void)
         /* GetNTPTime internally does AT+CIPCLOSE and reopens UDP.
            Reconnect MQTT TCP link, otherwise data goes nowhere. */
         if (!ESP8266_MQTTConnect())
-            USART1_Printf("[MQTT] Reconnect after NTP failed\n");
+            USART1_Printf("[MQTT] Reconnect after NTP failed\r\n");
         else if (!ESP8266_MQTTSubscribe())
-            USART1_Printf("[MQTT] Resubscribe after NTP failed\n");
+            USART1_Printf("[MQTT] Resubscribe after NTP failed\r\n");
         else
             s_mqtt_last_ping_tick = 0;   /* 重连成功，心跳计时从零开始 */
     #endif
@@ -504,9 +537,10 @@ int main(void)
     #if USE_MQTT
         if (loop_tick % 100 == 0) {   /* 100 x 100ms = 10 seconds */
             char mqtt_msg[64];
-            sprintf(mqtt_msg, "T=%.0f,H=%.0f,D=%.0f,L=%d",
+            sprintf(mqtt_msg, "T=%.0f,H=%.0f,D=%.0f,L=%d,M=%d",
                     g_sensor.temperature, g_sensor.humidity,
-                    g_sensor.distance, g_sensor.light_adc);
+                    g_sensor.distance, g_sensor.light_adc,
+                    (int)g_sensor.mq2_adc);
             ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, mqtt_msg);
         }
 
@@ -516,6 +550,12 @@ int main(void)
             s_mqtt_last_ping_tick = loop_tick;
         }
     #endif
+
+        /* 防拆检测独立高频采样：200ms 一次（5Hz）。
+           必须在下面的 2s 决策块之前：tick 20 同时满足 %2，先刷新标志再交给决策引擎 */
+        if (loop_tick % 2 == 0) {
+            TamperUpdate();
+        }
 
         /* 每 2s 采集 + 决策 */
         if (loop_tick % 20 == 0) {
@@ -649,12 +689,15 @@ int main(void)
         if (loop_tick % 10 == 0) {
 #if USE_ESP8266
             s_wifi_status = ESP8266_IsWiFiOk() ? "W+" : "W-";
+    #if USE_MQTT
+            s_mqtt_status = ESP8266_IsMQTTOk() ? "M+" : "M-";
+    #endif
 #endif
             if (g_alert != ALERT_NONE) {
                 OLED_ShowAlertPage(&g_sensor, g_alert, s_time_buf, s_cam_ok);
             } else {
-                OLED_ShowStatusBar(g_mode, s_time_buf, s_wifi_status);
-                OLED_ShowHomeScreen(&g_sensor, g_mode, ALERT_NONE);
+                OLED_ShowHomeScreen(&g_sensor, g_mode, s_time_buf,
+                                    s_wifi_status, s_mqtt_status);
             }
         }
 #endif

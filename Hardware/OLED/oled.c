@@ -336,15 +336,21 @@ void OLED_Init(void)
     OLED_Clear();
 }
 
-/* ============ SmartGuard 主界面 v3 (纯文字版, 无图标无分隔线) ============
+/* ============ SmartGuard 主界面 v4 (纯英文 4 行, 无图标无分隔线) ============
 
-   128x64 OLED (8x16 字体 = 2 page/行):
-   ┌─────────────────────────────────┐
-   │ HOME        v0.4  [AI:ON]       │  page 0 : 模式 + 版本 + AI 状态
-   │ L:2018      D:25.3cm            │  page 2 : 光照 + 距离
-   │ T:25.0C     H:50.0%             │  page 4 : 温度 + 湿度
-   │ Status: OK  /  !! INTRUSION !!  │  page 6 : 告警
-   └─────────────────────────────────┘
+   128x64 OLED (8x16 字体 = 2 page/行, 16 字符/行):
+   +--------------------------------+
+   | AW 12:34:56 W+M+               |  page 0-1 : 模式 时间 WiFi MQTT
+   | T26C H39%                      |  page 2-3 : 温度 湿度
+   | L50% D140cm                    |  page 4-5 : 光照 距离
+   | MQ2189 A GOOD                  |  page 6-7 : MQ2 空气质量
+   +--------------------------------+
+
+   行宽硬约束: 字符数 <= 16 且 x + 字符数*8 <= 128。
+   OLED_ShowString 在 x > 120 时折到 page+2，超出会覆盖下一行，
+   改动任一行文案后必须重新复核宽度。
+
+   告警页 OLED_ShowAlertPage 复用 page 0/2/4/6 同一套行位置。
 */
 
 void OLED_ShowMode(Guard_Mode_t mode)
@@ -373,44 +379,40 @@ void OLED_ShowStatusBar(Guard_Mode_t mode, const char *time_str, const char *wif
     OLED_ShowString(112, 0, wifi_status);
 }
 
-void OLED_ShowHomeScreen(Sensor_Data_t *data, Guard_Mode_t mode, Alert_Type_t alert)
+void OLED_ShowHomeScreen(Sensor_Data_t *data, Guard_Mode_t mode,
+                         const char *time_str, const char *wifi_status,
+                         const char *mqtt_status)
 {
-    char buf[32];
-    uint8_t lpct = light_to_pct(data->light_adc);
+    /* 模式 2 字母缩写，下标与 Guard_Mode_t 枚举顺序（HOME/AWAY/SLEEP）严格对应 */
+    static const char *const mode_abbr[3] = { "HO", "AW", "SL" };
+    const char *mtxt = ((unsigned)mode < 3u) ? mode_abbr[mode] : "??";
+    char buf[24];
 
-    /* 行 2-3: LUX XX%  TEMP XXC */
+    /* 行 1 (page 0-1): 模式 · 时间 · WiFi · MQTT —— 恒定 16 字符 */
+    OLED_ClearArea(0, 0, 128);
+    OLED_ClearArea(0, 1, 128);
+    snprintf(buf, sizeof(buf), "%s %s %s%s", mtxt, time_str, wifi_status, mqtt_status);
+    OLED_ShowString(0, 0, buf);
+
+    /* 行 2 (page 2-3): 温度整数 + 湿度整数 */
     OLED_ClearArea(0, 2, 128);
     OLED_ClearArea(0, 3, 128);
-    OLED_ShowString(0, 2, "LUX");
-    snprintf(buf, sizeof(buf), "%u%%", lpct);
-    OLED_ShowString(24, 2, buf);
-    OLED_ShowString(56, 2, "TEMP");
-    snprintf(buf, sizeof(buf), "%dC", (int)data->temperature);
-    OLED_ShowString(88, 2, buf);
+    snprintf(buf, sizeof(buf), "T%dC H%d%%", (int)data->temperature, (int)data->humidity);
+    OLED_ShowString(0, 2, buf);
 
-    /* 行 4-5: HUMI XX%  AIR XXXX */
+    /* 行 3 (page 4-5): 光照百分比 + 距离 cm */
     OLED_ClearArea(0, 4, 128);
     OLED_ClearArea(0, 5, 128);
-    OLED_ShowString(0, 4, "HUMI");
-    snprintf(buf, sizeof(buf), "%u%%", (uint8_t)data->humidity);
-    OLED_ShowString(32, 4, buf);
-    OLED_ShowString(72, 4, "AIR");
-    OLED_ShowString(96, 4, air_quality_str(data->mq2_adc));
+    snprintf(buf, sizeof(buf), "L%u%% D%dcm",
+             (unsigned)light_to_pct(data->light_adc), (int)data->distance);
+    OLED_ShowString(0, 4, buf);
 
-    /* 行 6-7: 模式 + 状态 */
+    /* 行 4 (page 6-7): MQ2 原始值 + 空气质量 */
     OLED_ClearArea(0, 6, 128);
     OLED_ClearArea(0, 7, 128);
-    switch (mode) {
-        case MODE_HOME:  OLED_ShowString(0, 6, "HOME");  break;
-        case MODE_AWAY:  OLED_ShowString(0, 6, "AWAY");  break;
-        case MODE_SLEEP: OLED_ShowString(0, 6, "SLEEP"); break;
-        default:         OLED_ShowString(0, 6, "???");   break;
-    }
-    if (alert != ALERT_NONE) {
-        OLED_ShowString(72, 6, "ALERT!");
-    } else {
-        OLED_ShowString(80, 6, "PATROL");
-    }
+    snprintf(buf, sizeof(buf), "MQ2%u A %s",
+             (unsigned)data->mq2_adc, air_quality_str(data->mq2_adc));
+    OLED_ShowString(0, 6, buf);
 }
 
 void OLED_ShowAlertPage(Sensor_Data_t *data, Alert_Type_t alert, const char *time_str, uint8_t cam_ok)
@@ -424,33 +426,44 @@ void OLED_ShowAlertPage(Sensor_Data_t *data, Alert_Type_t alert, const char *tim
 
     switch (alert) {
         case ALERT_INTRUSION:
-            OLED_ShowString(32, 0, "!! ALERT !!");
-            snprintf(buf, sizeof(buf), "D:%.1fcm", data->distance);
+            OLED_ShowString(8, 0, "!! INTRUSION !!");   /* 15 字符 -> 8..128 */
+            snprintf(buf, sizeof(buf), "DIST: %.1fcm", data->distance);
             OLED_ShowString(0, 2, buf);
-            OLED_ShowString(0, 4, cam_ok ? "CAM: OK" : "CAM: --");
+            OLED_ShowString(0, 4, cam_ok ? "CAM:  OK" : "CAM:  --");
+            snprintf(buf, sizeof(buf), "CHECK %s", time_str);
+            OLED_ShowString(0, 6, buf);
             break;
+
         case ALERT_FIRE:
-            OLED_ShowString(24, 0, "FIRE ALARM");
-            snprintf(buf, sizeof(buf), "MQ2:%d", data->mq2_adc);
+            OLED_ShowString(8, 0, "   !! FIRE !!");     /* 13 字符 -> 8..112 */
+            snprintf(buf, sizeof(buf), "MQ2:%u T:%dC",
+                     (unsigned)data->mq2_adc, (int)data->temperature);
             OLED_ShowString(0, 2, buf);
-            snprintf(buf, sizeof(buf), "T:%.0fC", data->temperature);
-            OLED_ShowString(0, 4, buf);
+            OLED_ShowString(0, 4, cam_ok ? "CAM:  OK" : "CAM:  --");
+            snprintf(buf, sizeof(buf), "EVAC %s", time_str);
+            OLED_ShowString(0, 6, buf);
             break;
+
         case ALERT_ENV_ABNORMAL:
-            OLED_ShowString(36, 0, "AIR BAD");
-            snprintf(buf, sizeof(buf), "MQ2:%d", data->mq2_adc);
+            OLED_ShowString(8, 0, "  AIR BAD");         /* 9 字符 -> 8..80 */
+            snprintf(buf, sizeof(buf), "MQ2:%u", (unsigned)data->mq2_adc);
             OLED_ShowString(0, 2, buf);
+            OLED_ShowString(0, 4, "CHECK NOW");
+            OLED_ShowString(0, 6, time_str);
             break;
+
         case ALERT_TAMPER:
-            OLED_ShowString(40, 0, "TAMPER");
-            OLED_ShowString(0, 2, "CHECK!");
+            OLED_ShowString(8, 0, "  TAMPER");          /* 8 字符 -> 8..72 */
+            OLED_ShowString(0, 2, "DO NOT MOVE");
+            OLED_ShowString(0, 4, "CHECK NOW");
+            OLED_ShowString(0, 6, time_str);
             break;
+
         default:
-            OLED_ShowString(32, 0, "!! ALERT !!");
+            OLED_ShowString(0, 0, "!! ALERT !!");
+            OLED_ShowString(0, 6, time_str);
             break;
     }
-
-    OLED_ShowString(40, 6, time_str);
 }
 
 void OLED_ShowBootProgress(uint8_t percent, const char *status)
@@ -470,6 +483,7 @@ void OLED_ShowBootProgress(uint8_t percent, const char *status)
     bar[15] = '\0';
 
     OLED_ShowString(0, 0, "SmartGuard v0.4");
+    OLED_ShowString(8, 1, "SECURITY AGENT");   /* 新增 page 1, 14 字符 -> 8..120 居中 */
     OLED_ShowString(0, 3, bar);
     OLED_ShowString(0, 5, status);
 }

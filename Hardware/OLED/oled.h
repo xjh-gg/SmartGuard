@@ -69,7 +69,9 @@ void OLED_ShowIcon8x8(uint8_t x, uint8_t page, const uint8_t *icon);
 void OLED_ShowChinese(uint8_t x, uint8_t y, uint8_t no);
 void OLED_ShowMode(Guard_Mode_t mode);
 void OLED_ShowStatusBar(Guard_Mode_t mode, const char *time_str, const char *wifi_status);
-void OLED_ShowHomeScreen(Sensor_Data_t *data, Guard_Mode_t mode, Alert_Type_t alert);
+void OLED_ShowHomeScreen(Sensor_Data_t *data, Guard_Mode_t mode,
+                         const char *time_str, const char *wifi_status,
+                         const char *mqtt_status);
 void OLED_ShowAlertPage(Sensor_Data_t *data, Alert_Type_t alert, const char *time_str, uint8_t cam_ok);
 void OLED_ShowBootProgress(uint8_t percent, const char *status);
 
