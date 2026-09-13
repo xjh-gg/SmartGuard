@@ -272,6 +272,15 @@ uint8_t ESP8266_IsWiFiOk(void)
 }
 
 /**
+  * @brief  查询 MQTT 会话是否就绪（供 OLED 状态行等只读使用）
+  * @retval 1=会话就绪（CONNECT+SUBSCRIBE 成功且未断），0=未就绪
+  */
+uint8_t ESP8266_IsMQTTOk(void)
+{
+    return s_mqtt_ok;
+}
+
+/**
   * @brief  UDP 连接（单连接模式）
   * @param  ip:   目标 IP 地址字符串
   * @param  port: 目标端口号

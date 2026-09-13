@@ -62,6 +62,7 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt);        /* NTP/UDP 方式获取�
 uint8_t ESP8266_CheckInternet(void);
 uint8_t ESP8266_CheckHealth(void);
 uint8_t ESP8266_IsWiFiOk(void);        /* 返回 WiFi 连接状态，供 OLED 状态栏使用 */
+uint8_t ESP8266_IsMQTTOk(void);       /* 返回 MQTT 会话状态，供 OLED 状态行使用 */
 
 /* ========== MQTT Broker 配置（替代原巴法云） ========== */
 #define USE_MQTT              1

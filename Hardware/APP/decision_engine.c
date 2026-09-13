@@ -185,7 +185,14 @@ static Alert_Type_t CheckFire(const Sensor_Data_t *data)
   */
 static Alert_Type_t CheckTamper(const Sensor_Data_t *data)
 {
-    if (s_mode == MODE_HOME) return ALERT_NONE;
+    if (s_mode == MODE_HOME) {
+        /* 只在确有震动被抑制时打印：本函数每 2.2s 调一次，HOME 下无条件打印
+           会变成约 27 行/分钟的常驻刷屏，把 1Hz 的 [RTC] 淹掉 */
+        if (data->tamper_flag) {
+            USART1_SendString("[TAMPER] suppressed by MODE_HOME\r\n");
+        }
+        return ALERT_NONE;
+    }
     if (data->tamper_flag) {
         USART1_SendString("[ALERT] 防拆告警: 检测到震动或移动\r\n");
         return ALERT_TAMPER;
@@ -208,27 +215,26 @@ static void AutoLighting(const Sensor_Data_t *data)
 
 Alert_Type_t DecisionEngine_Run(const Sensor_Data_t *data)
 {
-    Alert_Type_t alert = ALERT_NONE;
+    Alert_Type_t alert;
+    Alert_Type_t a_fire, a_intr, a_tamp;
 
     /* 1. 自动照明 */
     AutoLighting(data);
 
-    /* 2. 火灾检测 */
-    alert = CheckFire(data);
+    /* 2. 三项判定全部求值，再按优先级选一个上报（优先级：FIRE > TAMPER > INTRUSION）
+       原短路串联在 CheckFire 非空时就不再查后两项，摇晃板子时甩动的 HC-SR04 会抢先
+       判成入侵，CheckTamper 一次都不执行，防拆告警永远出不来。
+       火灾最严重故最高；防拆是"设备被移动"的强信号，应高于距离类入侵判定。 */
+    a_fire = CheckFire(data);
+    a_intr = CheckIntrusion(data);
+    a_tamp = CheckTamper(data);
 
-    /* 3. 入侵检测 */
-    if (alert == ALERT_NONE)
-    {
-        alert = CheckIntrusion(data);
-    }
+    if      (a_fire != ALERT_NONE) alert = a_fire;
+    else if (a_tamp != ALERT_NONE) alert = a_tamp;
+    else if (a_intr != ALERT_NONE) alert = a_intr;
+    else                           alert = ALERT_NONE;
 
-    /* 4. 防拆/震动检测 */
-    if (alert == ALERT_NONE)
-    {
-        alert = CheckTamper(data);
-    }
-
-    /* 5. 告警动作（状态变化才触发） */
+    /* 3. 告警动作（状态变化才触发） */
     if (alert != s_alert_last)
     {
         switch (alert)

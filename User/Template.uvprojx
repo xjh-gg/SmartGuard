@@ -456,17 +456,17 @@
             <File>
               <FileName>stm32f4xx_crc.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\02示例工程\01工程搭建\02Template\Library\src\stm32f4xx_crc.c</FilePath>
+              <FilePath>..\Library\src\stm32f4xx_crc.c</FilePath>
             </File>
             <File>
               <FileName>stm32f4xx_flash.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\02示例工程\01工程搭建\02Template\Library\src\stm32f4xx_flash.c</FilePath>
+              <FilePath>..\Library\src\stm32f4xx_flash.c</FilePath>
             </File>
             <File>
               <FileName>stm32f4xx_iwdg.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\02示例工程\01工程搭建\02Template\Library\src\stm32f4xx_iwdg.c</FilePath>
+              <FilePath>..\Library\src\stm32f4xx_iwdg.c</FilePath>
             </File>
             <File>
               <FileName>stm32f4xx_pwr.c</FileName>
