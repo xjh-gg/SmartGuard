@@ -6,6 +6,7 @@
 - **不做**：不依赖云端推理、不跑 RTOS、不挂外部存储。
 - **芯片**：STM32F407ZE（Cortex-M4 · 168 MHz · 192 KB RAM · 1 MB Flash）
 - **构建**：Keil MDK v5 + J-Link，当前 `0 Error(s), 0 Warning(s)`
+- **配套**：支持 MQTT 双向通信 + Web 前端（Vue 3）实时监控面板
 
 ## 项目背景
 
@@ -61,15 +62,32 @@
 | 防基线污染 | 偏离过大不并入 EWMA：MQ-2 >2σ、温湿度 >3σ 拒绝吸收 | `AT_Update()` `:171-181` |
 | 慢速跟随 | EWMA α = 0.01，适应昼夜/季节渐变 | `adaptive_threshold.h:31` |
 | 连续确认窗 | 入侵需累计 3 次命中才出告警，触发后清零重累积 | `decision_engine.c:152` |
-| 防拆检测 | 陀螺仪偏移积分，计数 ≥3 判定 | `main.c:326-327` |
-| 告警冷却 | 同类告警 5s 内不重复上报 | `main.c:555` |
+| 防拆检测 | 8 格滑动窗口（命中 >=3 次 @8dps） | 见 `main.c` `TamperUpdate()` |
+| 告警冷却 | 同类告警 5s 内不重复上报 | `esp8266.c` `SEND_COOLDOWN_MS` |
 | 掉电恢复 | Flash Sector 7 存基线+模式，CRC 校验通过则跳过 20s 学习 | `config_store.c` |
 | 端侧 TinyML | 4 路原始量 → 10 维特征（含偏差、倒数、平方）→ 标准化 → MLP | `ml_inference.h:89` |
 | 手写 MQTT | CONNECT/SUBSCRIBE/PUBLISH/PINGREQ，QoS 0，剩余长度单字节 | `esp8266.c:552-1064` |
-| 云端下行控制 | `+IPD` 两级状态机收帧 → `MQTT_OnCmdReceived` 驱动 PE13；实测 19/19 条命令全响应 | `esp8266.c:792-967`、`main.c:128-141` |
-| 运行期阈值观测 | `[DBG] MQ2/th/T` 每 10s 一条；安静环境应恒为 `th=400`，低于此值即下限失效 | `main.c:541-544` |
+| 云端下行控制 | `+IPD` 两级状态机收帧 → `MQTT_OnCmdReceived` 驱动 PE13；实测 19/19 条命令全响应 | `esp8266.c:792-967`、见 `main.c` `MQTT_OnCmdReceived()` |
+| 运行期阈值观测 | `[DBG] MQ2/th/T` 每 10s 一条；安静环境应恒为 `th=400`，低于此值即下限失效 | 见 `main.c` 主循环 `%100` 分支 |
 | NTP 对时 | UDP 123；失败回退编译时间 | `esp8266.c:1066-1243` |
-| 看门狗 | IWDG 2s，基线学习完成后才启动 | `main.c:485` |
+| 看门狗 | IWDG 2s，基线学习完成后才启动 | 见 `main.c` `main()` 初始化段 |
+
+## Web 前端
+
+配套的实时监控面板，是**独立项目、位于本仓库的同级目录**，不被本仓库跟踪。
+
+| 项 | 内容 |
+|---|---|
+| 位置 | `D:\Projects\workspace\smartguard-web\` |
+| 技术栈 | Vue 3 + Vite + Pinia + ECharts + mqtt.js（另含 vue-router、dayjs、@lucide/vue） |
+| 页面 | Dashboard / History / Settings / About（`src/views/*View.vue`） |
+| 连接方式 | MQTT over WebSocket → `ws://192.168.137.1:9001` |
+| 配置入口 | broker 地址由 `.env.local` 的 `VITE_MQTT_URL` 提供（`src/services/mqtt-client.js`），未设置则前端拒绝连接并在控制台报错 |
+| 启动 | `npm run dev` → 浏览器打开 <http://192.168.137.1:8080>（`vite.config.js` 固定 `host: 0.0.0.0`、`port: 8080`） |
+
+> ⚠️ 设备侧走 TCP 1883、Web 侧走 WebSocket 9001，是同一 broker 的两个监听端口；
+> 但 9001 的 WebSocket 监听在本仓库内**没有对应的配置或启动脚本**（见"已知限制"），
+> 只克隆本仓库无法直接把前端连上。
 
 ## 目录结构
 
@@ -148,6 +166,8 @@ mosquitto_sub -h 192.168.137.1 -p 1883 -t 'home/#' -v
 9. **MQ-2 驱动未接线**：`MQ2_Init/MQ2_Read` 无调用点，遥测实际走 `ADC_ReadMQ2()`。
 10. **凭据已外置但 git 历史仍含旧明文**：WiFi 凭据与巴法云 UID/TOPIC 均已外置到 gitignored 的 `wifi_config.h` / `bemfa_config.h`（模板见各自 `.example`），但 `esp8266.h` 与 `docs/README_v0.6_legacy.md` 的历史版本、以及 `origin/master` 仍含旧明文，公开仓库前必须处理；凭据已轮换。
 11. **注释滞后于代码**：`decision_engine.h:8` 写 OLED 用 PB3/PB5/PB9，实际 PB0/PF11/PC13 且 PB9 是软件 I2C SDA；`iwdg.h:17` 写 1s，实际 2s；启动横幅打印 `v0.4`。
+12. **MQTT 断网后恢复需 30s~5min，取决于网络状况**：这不是重试退避，而是**健康检查周期**决定的。`ESP8266_CheckHealth()` 只在 `loop_tick % 3000` 时调用（标称 300s，叠加第 4 条的 16% 偏差实测约 348s），其内部还要求 `s_send_fail_count >= 3` 才重建 MQTT；该计数在每次 `AT+CIPSEND` 拿不到 `>` 时 +1，而遥测每约 11.6s 发一次，攒满 3 次约需 35s。故断网恰好发生在健康检查之前 → 约 30~40s 恢复；刚错过一次健康检查 → 最坏要等满一个周期，约 5~5.8min。
+13. **broker 无法按文档复现**：「快速上手」第 3 步让读者 `cd .. && ./start_mqtt.bat`，但该脚本在仓库内和上级目录 `D:\Projects\workspace\` 都不存在，仓库里也没有任何 mosquitto 配置文件。Web 前端依赖的 **9001 WebSocket 监听**在全仓库零配置痕迹（`9001` 只出现在前端项目的 `.env.local`，而那是 gitignored 的、不属于本仓库）。
 
 ## 版本记录
 
@@ -159,6 +179,7 @@ mosquitto_sub -h 192.168.137.1 -p 1883 -t 'home/#' -v
 | 上云 | 巴法云 TCP 遥测（后下线，`#if 0` 保留备查） | `b81dd05`…`092c58e` |
 | 当前 | 自建 MQTT broker + 下行控制回调；编译警告 13→0；仓库瘦身（厂商资料移出、文档归档） | `6f6f398`…`b16511c` |
 | 本轮 | MQTT 下行两级状态机 + 丢包窗口；火灾阈值 400 下限；按键内部上拉；`[DBG]` 观测行；`ESP8266_Reset` 分段喂狗 | `a227282`…`5afef93` |
+| v0.6.1 | MQTT 下行控制 + 防拆检测（滑动窗口）+ OLED 主界面重构 + Web 前端 | — |
 
 ML 指标（`v1_train/training_report.txt`，485 样本 / 388 训练 / 97 测试）：Accuracy 0.938、Recall 1.000、F1 0.900。该报告首行写的结构 `10→16→1` 与部署头文件实际数组 `10→16→8→1` 不一致，以 `ml_inference.h` 为准。
 
