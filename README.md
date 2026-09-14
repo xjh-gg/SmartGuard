@@ -68,6 +68,8 @@
 | 端侧 TinyML | 4 路原始量 → 10 维特征（含偏差、倒数、平方）→ 标准化 → MLP | `ml_inference.h:89` |
 | 手写 MQTT | CONNECT/SUBSCRIBE/PUBLISH/PINGREQ，QoS 0，剩余长度单字节 | `esp8266.c:552-1064` |
 | 云端下行控制 | `+IPD` 两级状态机收帧 → `MQTT_OnCmdReceived` 驱动 PE13；实测 19/19 条命令全响应 | `esp8266.c:792-967`、见 `main.c` `MQTT_OnCmdReceived()` |
+| **MQTT retain 灯状态自动上报** | 固件每次 MQTT 会话就绪（首次连接 / 自动重连 / NTP 重连 / CheckHealth 重建）时，往 `home/light/status` 发 `retain=1` 的 `on` / `off`；新订阅者（前端、CLI）一连上立刻收到最后一条真实状态 | `esp8266.c:100` `:700` `:1339`、`esp8266.h:96`、`main.c:128-174` |
+| **MQTT retain 模式状态自动上报** | 固件每次 MQTT 会话就绪、以及收到 MQTT 模式命令 / 物理按键切模式时，往 `home/mode/status` 发 `retain=1` 的 `HOME` / `AWAY` / `SLEEP`；新订阅者一连上立刻收到最后一次真实模式 | `esp8266.c:101` `:702` `:1341`、`esp8266.h:97`、`main.c:154-164`、`main.c:438-440` |
 | 运行期阈值观测 | `[DBG] MQ2/th/T` 每 10s 一条；安静环境应恒为 `th=400`，低于此值即下限失效 | 见 `main.c` 主循环 `%100` 分支 |
 | NTP 对时 | UDP 123；失败回退编译时间 | `esp8266.c:1066-1243` |
 | 看门狗 | IWDG 2s，基线学习完成后才启动 | 见 `main.c` `main()` 初始化段 |
@@ -82,6 +84,8 @@
 | 技术栈 | Vue 3 + Vite + Pinia + ECharts + mqtt.js（另含 vue-router、dayjs、@lucide/vue） |
 | 页面 | Dashboard / History / Settings / About（`src/views/*View.vue`） |
 | 连接方式 | MQTT over WebSocket → `ws://192.168.137.1:9001` |
+| **订阅 topic** | 同时订阅 `home/sensor/status`（遥测 + ALERT 告警）、`home/light/status`（固件 retain 的真实灯状态）与 `home/mode/status`（固件 retain 的真实模式状态）。后两者用于纠正按钮 / chip 状态，不再只依赖 localStorage 乐观更新 |
+| **按钮同步** | `ControlPanel.vue` 同时注册 `onLightStatus` 与 `onModeStatus` 回调，前者收到 `on` / `off` 更新 `ledOn`，后者收到 `HOME` / `AWAY` / `SLEEP` 更新当前模式 chip。Broker retained 消息在 WebSocket CONNECT 后极短时间内送达，刷新页面后按钮与 chip 100ms 内显示真实状态 |
 | 配置入口 | broker 地址由 `.env.local` 的 `VITE_MQTT_URL` 提供（`src/services/mqtt-client.js`），未设置则前端拒绝连接并在控制台报错 |
 | 启动 | `npm run dev` → 浏览器打开 <http://192.168.137.1:8080>（`vite.config.js` 固定 `host: 0.0.0.0`、`port: 8080`） |
 
@@ -120,11 +124,17 @@ tail -3 build_log.txt        # 期望 0 Error(s), 0 Warning(s)
 
 **2. 烧录**：J-Link 接 SWD，Keil 内按 F7，或 `UV4 -f User/Template.uvprojx`。
 
-**3. 起 broker**（脚本在仓库上一级目录）
+**3. 起 broker**（仓库无脚本，需自行安装 Windows mosquitto 原生服务）
 
 ```bash
-cd .. && ./start_mqtt.bat    # Docker eclipse-mosquitto + tcp_proxy
-                             # 192.168.137.1:1883 → 127.0.0.1:2883
+# 安装 mosquitto（官网下载 Windows 版）后，编辑
+# C:\Program Files (x86)\mosquitto\mosquitto.conf，新增：
+listener 1883                      # TCP 1883：固件 MQTT over AT+MQTTTCONN
+listener 9001 protocol websockets  # WebSocket 9001：前端 mqtt.js over ws://
+# 然后：
+net start mosquitto                # 启动服务
+# 浏览器连 ws://192.168.137.1:9001
+# 前端订阅 home/light/status 会立即收到 broker retained
 ```
 
 **4. 观察遥测**（每 10s 一条）
@@ -163,11 +173,11 @@ mosquitto_sub -h 192.168.137.1 -p 1883 -t 'home/#' -v
 6. **按键零消抖**：`KEY_Scan()` 是纯电平读取 + 优先级链，靠 `HandleBoardKey()` 的边沿检测兜底。内部上拉已消除浮空伪边沿（实测 1:1），机械抖动本身仍未过滤。
 7. **引脚复用冲突**：PF9 同时是 LED0 与 TIM14 PWM，PE14 同时是 LED3 与 TIM1 PWM，PC13 同时是 OLED CS 与 RTC 输出。叠加上面那张 LED 错位表，`LED_ON(n)` 必须先换算成实际引脚再下结论。
 8. **`AT_TEMP_RISE_PER_MIN`（`adaptive_threshold.h:30`）是死宏**，零引用，升温速率检测未实现。
-9. **MQ-2 驱动未接线**：`MQ2_Init/MQ2_Read` 无调用点，遥测实际走 `ADC_ReadMQ2()`。
+9. **MQ-2 接线正常，但封装层 `MQ2_Init/MQ2_Read` 是死代码**：`Hardware/MQ2/mq2.c` 的 `MQ2_Init()` / `MQ2_Read()` 全项目零调用；实际采样走 `Hardware/ADC/adc.c:136` 的 `ADC_ReadMQ2()`，由 `sensor_hub.c:66` 每轮主循环调用。`adc.h:46` 默认 `USE_MQ2 = 1`，实测串口日志 `[DBG] MQ2=360 th=400`、基线学习 `mq2_base=324 sigma=17`，火灾分支真实启用。原 README 误写"未接线"系 v0.4 时代残留。
 10. **凭据已外置但 git 历史仍含旧明文**：WiFi 凭据与巴法云 UID/TOPIC 均已外置到 gitignored 的 `wifi_config.h` / `bemfa_config.h`（模板见各自 `.example`），但 `esp8266.h` 与 `docs/README_v0.6_legacy.md` 的历史版本、以及 `origin/master` 仍含旧明文，公开仓库前必须处理；凭据已轮换。
-11. **注释滞后于代码**：`decision_engine.h:8` 写 OLED 用 PB3/PB5/PB9，实际 PB0/PF11/PC13 且 PB9 是软件 I2C SDA；`iwdg.h:17` 写 1s，实际 2s；启动横幅打印 `v0.4`。
+11. **注释滞后于代码**：`decision_engine.h:8` 写 OLED 用 PB3/PB5/PB9，实际 PB0/PF11/PC13 且 PB9 是软件 I2C SDA；`iwdg.h:17` 写 1s，实际 2s；**启动横幅打印 `v0.4`，版本记录已演进到 `v0.6.2`**（源码 `main.c:451` 未修正）。
 12. **MQTT 断网后恢复需 30s~5min，取决于网络状况**：这不是重试退避，而是**健康检查周期**决定的。`ESP8266_CheckHealth()` 只在 `loop_tick % 3000` 时调用（标称 300s，叠加第 4 条的 16% 偏差实测约 348s），其内部还要求 `s_send_fail_count >= 3` 才重建 MQTT；该计数在每次 `AT+CIPSEND` 拿不到 `>` 时 +1，而遥测每约 11.6s 发一次，攒满 3 次约需 35s。故断网恰好发生在健康检查之前 → 约 30~40s 恢复；刚错过一次健康检查 → 最坏要等满一个周期，约 5~5.8min。
-13. **broker 无法按文档复现**：「快速上手」第 3 步让读者 `cd .. && ./start_mqtt.bat`，但该脚本在仓库内和上级目录 `D:\Projects\workspace\` 都不存在，仓库里也没有任何 mosquitto 配置文件。Web 前端依赖的 **9001 WebSocket 监听**在全仓库零配置痕迹（`9001` 只出现在前端项目的 `.env.local`，而那是 gitignored 的、不属于本仓库）。
+13. **broker 为外部 Windows 原生 mosquitto 服务，仓库内无配置无启动脚本**：实测进程名 `mosquitto`（PID 5684，非 Docker），同一进程同时监听 **TCP 1883**（固件 MQTT）与 **WebSocket 9001**（前端 WebSocket）。配置文件位于 `C:\Program Files (x86)\mosquitto\mosquitto.conf`，不在本仓库也不在上级目录。仓库声称的 `cd .. && ./start_mqtt.bat` 在 `D:\Projects\workspace\` 及其上级 **全盘不存在**。读者要复现前端连接，必须**自行安装 Windows mosquitto 原生服务**，在 `mosquitto.conf` 里新增一条 `listener 9001 protocol websockets`，然后启动服务。
 
 ## 版本记录
 
@@ -180,6 +190,7 @@ mosquitto_sub -h 192.168.137.1 -p 1883 -t 'home/#' -v
 | 当前 | 自建 MQTT broker + 下行控制回调；编译警告 13→0；仓库瘦身（厂商资料移出、文档归档） | `6f6f398`…`b16511c` |
 | 本轮 | MQTT 下行两级状态机 + 丢包窗口；火灾阈值 400 下限；按键内部上拉；`[DBG]` 观测行；`ESP8266_Reset` 分段喂狗 | `a227282`…`5afef93` |
 | v0.6.1 | MQTT 下行控制 + 防拆检测（滑动窗口）+ OLED 主界面重构 + Web 前端 | `0dd3314` `fca83f4` |
+| v0.6.2 | MQTT retain 双向状态同步（灯状态 + 模式状态）；物理按键切模式同步上报 broker；修复"模式命令污染灯状态 topic"bug | 本轮 |
 
 ML 指标（`v1_train/training_report.txt`，485 样本 / 388 训练 / 97 测试）：Accuracy 0.938、Recall 1.000、F1 0.900。该报告首行写的结构 `10→16→1` 与部署头文件实际数组 `10→16→8→1` 不一致，以 `ml_inference.h` 为准。
 

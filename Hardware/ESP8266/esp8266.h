@@ -72,6 +72,7 @@ uint8_t ESP8266_IsMQTTOk(void);       /* 返回 MQTT 会话状态，供 OLED 状
 #define MQTT_TOPIC_CMD        "home/light/cmd"
 #define MQTT_TOPIC_STATUS     "home/light/status"     /* 灯状态 on/off */
 #define MQTT_TOPIC_SENSOR     "home/sensor/status"    /* 遥测 + 告警 */
+#define MQTT_TOPIC_MODE_STATUS "home/mode/status"       /* 模式状态 HOME/AWAY/SLEEP，retain */
 #define MQTT_KEEPALIVE_SEC    60
 
 /* ---------- 原巴法云配置（已下线，保留供参考） ----------
@@ -87,11 +88,13 @@ uint8_t ESP8266_BemfaHeartbeat(void);
 
 uint8_t ESP8266_MQTTConnect(void);       /* TCP 连接 + MQTT CONNECT */
 uint8_t ESP8266_MQTTSubscribe(void);     /* SUBSCRIBE 主题 */
-uint8_t ESP8266_MQTTPublish(const char *topic, const char *payload);
+uint8_t ESP8266_MQTTPublish(const char *topic, const char *payload, uint8_t retain);
 uint8_t ESP8266_MQTTPing(void);          /* PINGREQ 心跳 */
 void    ESP8266_MQTTProcessRx(void);     /* 处理 +IPD 帧中的 MQTT 下行包 */
 
 /* 外部回调：收到 home/light/cmd 的 PUBLISH 时由 main.c 实现 */
 extern void MQTT_OnCmdReceived(const char *payload);
+extern void MQTT_ReportLightStatus(void);   /* 会话就绪时由 esp8266.c 回调，内部发 retained */
+extern void MQTT_ReportModeStatus(void);    /* 同上报模式状态到 home/mode/status (retain) */
 
 #endif /* __ESP8266_H__ */

@@ -125,6 +125,10 @@ static float   s_gyro_zero_gz = 0.0f;
 /* ============ MQTT 回调（替代原巴法云） ============ */
 static uint32_t s_mqtt_last_ping_tick = 0;
 
+/* 灯状态跟踪（供 MQTT_ReportLightStatus 和 MQTT_OnCmdReceived 使用）：
+   'on' = PE13 低电平点亮；'off' = PE13 高电平熄灭。
+   初值 'off' 与 LED_Init() -> LED_AllOff() 的实际效果一致。 */
+static const char *g_light_state = "off";
 /* ESP8266 下行控制指令回调：收到 home/light/cmd 的 PUBLISH 时调用 */
 void MQTT_OnCmdReceived(const char *payload)
 {
@@ -134,29 +138,55 @@ void MQTT_OnCmdReceived(const char *payload)
        全项目仅此处驱动，不会被告警灯逻辑（用 case 1 = PF9）覆盖。 */
     if (strcmp(payload, "on") == 0) {
         LED_ON(3);
+        g_light_state = "on";
         USART1_Printf("[MQTT] CMD=on\r\n");
+        ESP8266_MQTTPublish(MQTT_TOPIC_STATUS, "on", 1);
     }
     else if (strcmp(payload, "off") == 0) {
         LED_OFF(3);
+        g_light_state = "off";
         USART1_Printf("[MQTT] CMD=off\r\n");
+        ESP8266_MQTTPublish(MQTT_TOPIC_STATUS, "off", 1);
     }
     else if (strcmp(payload, "HOME") == 0) {
         g_mode = MODE_HOME;  DecisionEngine_SetMode(g_mode);
         USART1_Printf("[MQTT] CMD=HOME\r\n");
+        MQTT_ReportModeStatus();
     }
     else if (strcmp(payload, "AWAY") == 0) {
         g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode);
         USART1_Printf("[MQTT] CMD=AWAY\r\n");
+        MQTT_ReportModeStatus();
     }
     else if (strcmp(payload, "SLEEP") == 0) {
         g_mode = MODE_SLEEP; DecisionEngine_SetMode(g_mode);
         USART1_Printf("[MQTT] CMD=SLEEP\r\n");
+        MQTT_ReportModeStatus();
     }
     else {
         USART1_Printf("[MQTT] unknown CMD: %s\r\n", payload);
     }
-    /* 状态改变后上报 */
-    ESP8266_MQTTPublish(MQTT_TOPIC_STATUS, payload);
+}
+
+
+/* MQTT_ReportLightStatus：broker 会话就绪后立刻主动上报当前灯状态，
+   使用 retain 标志，使任何新订阅者都能立刻收到最后一条。
+   esp8266.c 的 EnsureSession / Init 成功后会回调本函数。 */
+void MQTT_ReportLightStatus(void)
+{
+    ESP8266_MQTTPublish(MQTT_TOPIC_STATUS, g_light_state, 1);
+    USART1_Printf("[MQTT] REPORT light_state=%s (retain)\r\n", g_light_state);
+}
+
+/* MQTT_ReportModeStatus：broker 会话就绪后上报当前模式状态（retain）。
+   固件侧 g_mode 为 enum，此处转成字符串供前端识别。
+   同 MQTT_ReportLightStatus，在所有会话就绪回调里成对出现。 */
+void MQTT_ReportModeStatus(void)
+{
+    const char *ms = g_mode == MODE_HOME ? "HOME" :
+                     g_mode == MODE_AWAY ? "AWAY" : "SLEEP";
+    ESP8266_MQTTPublish(MQTT_TOPIC_MODE_STATUS, ms, 1);
+    USART1_Printf("[MQTT] REPORT mode=%s (retain)\r\n", ms);
 }
 
 /* ============ 硬件初始化 ============ */
@@ -382,9 +412,9 @@ static void HandleMatrixKey(void)
     if (key == 0) return;
 
     switch (key) {
-        case 'A': g_mode = MODE_HOME;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE HOME\r\n");  break;
-        case 'B': g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE AWAY\r\n");  break;
-        case 'C': g_mode = MODE_SLEEP; DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE SLEEP\r\n"); break;
+        case 'A': g_mode = MODE_HOME;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE HOME\r\n");  MQTT_ReportModeStatus();  break;
+        case 'B': g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE AWAY\r\n");  MQTT_ReportModeStatus();  break;
+        case 'C': g_mode = MODE_SLEEP; DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE SLEEP\r\n"); MQTT_ReportModeStatus(); break;
         case 'D':
             g_manual_alert = ALERT_INTRUSION;
             g_last_alarm_tick = 0;   /* 强制立即发送 */
@@ -405,9 +435,9 @@ static void HandleBoardKey(void)
     if (key == 0) return;            /* 松开，不触发 */
 
     switch (key) {
-        case S1: g_mode = MODE_HOME;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE HOME\r\n");  break;
-        case S2: g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE AWAY\r\n");  break;
-        case S3: g_mode = MODE_SLEEP; DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE SLEEP\r\n"); break;
+        case S1: g_mode = MODE_HOME;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE HOME\r\n");  MQTT_ReportModeStatus();  break;
+        case S2: g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE AWAY\r\n");  MQTT_ReportModeStatus();  break;
+        case S3: g_mode = MODE_SLEEP; DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE SLEEP\r\n"); MQTT_ReportModeStatus(); break;
         case S4:
             g_manual_alert = ALERT_INTRUSION;
             g_last_alarm_tick = 0;
@@ -474,8 +504,11 @@ int main(void)
             USART1_Printf("[MQTT] Reconnect after NTP failed\r\n");
         else if (!ESP8266_MQTTSubscribe())
             USART1_Printf("[MQTT] Resubscribe after NTP failed\r\n");
-        else
-            s_mqtt_last_ping_tick = 0;   /* 重连成功，心跳计时从零开始 */
+        else {
+            s_mqtt_last_ping_tick = 0;
+            MQTT_ReportLightStatus();   /* 重连成功立刻上报灯状态（broker retain） */
+            MQTT_ReportModeStatus();    /* 重连成功立刻上报模式状态（broker retain） */
+        }
     #endif
 #endif
 
@@ -541,7 +574,7 @@ int main(void)
                     g_sensor.temperature, g_sensor.humidity,
                     g_sensor.distance, g_sensor.light_adc,
                     (int)g_sensor.mq2_adc);
-            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, mqtt_msg);
+            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, mqtt_msg, 0);
         }
 
         /* MQTT 心跳 PINGREQ：每 MQTT_KEEPALIVE_SEC / 2 秒发一次 */
@@ -598,13 +631,13 @@ int main(void)
 #if USE_ESP8266
     #if USE_MQTT
                         if (effective == ALERT_INTRUSION)
-                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Intrusion!");
+                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Intrusion!", 0);
                         else if (effective == ALERT_FIRE)
-                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Fire!");
+                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Fire!", 0);
                         else if (effective == ALERT_TAMPER)
-                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Tamper!");
+                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Tamper!", 0);
                         else
-                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:EnvAbnormal!");
+                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:EnvAbnormal!", 0);
     #else
                         if (effective == ALERT_INTRUSION)
                             ESP8266_SendAlert("Intrusion!");
@@ -713,4 +746,3 @@ int main(void)
         IWDG_Feed();
     }
 }
-

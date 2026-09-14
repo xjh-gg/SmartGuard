@@ -97,6 +97,8 @@ uint8_t ESP8266_Init(void)
     else {
         s_mqtt_ok = 1;   /* CONNECT + SUBSCRIBE 都成功，MQTT 会话就绪 */
         U1_PRINTF("[MQTT] Init OK (session ready)\r\n");
+        MQTT_ReportLightStatus();    /* 首次会话就绪后主动上报灯状态（broker retain） */
+        MQTT_ReportModeStatus();   /* 首次会话就绪后主动上报模式状态（broker retain） */
     }
 #else
     /* 3. 建立 UDP 连接到电脑（用于推告警） */
@@ -696,13 +698,16 @@ static uint8_t MQTT_EnsureSession(void)
     }
     s_mqtt_ok = 1;
     U1_PRINTF("[MQTT] session restored OK\r\n");
+    MQTT_ReportLightStatus();    /* 会话就绪后立刻主动上报灯状态（broker retain） */
+    MQTT_ReportModeStatus();       /* 会话就绪后立刻主动上报模式状态（broker retain） */
     return 1;
 }
 
 /**
   * @brief  向指定主题发布消息（QoS 0，不等待 PUBACK）
+  * @param  retain: 1=broker 保留最后一条消息，新客户端订阅时立刻送达；0=不保留
   */
-uint8_t ESP8266_MQTTPublish(const char *topic, const char *payload)
+uint8_t ESP8266_MQTTPublish(const char *topic, const char *payload, uint8_t retain)
 {
     uint8_t pkt[256];
     uint16_t pos;
@@ -728,7 +733,7 @@ uint8_t ESP8266_MQTTPublish(const char *topic, const char *payload)
     memcpy(pkt + pos, payload, plen);
     pos += plen;
 
-    pkt[0] = 0x30;                  /* PUBLISH QoS 0 (no dup, no retain) */
+    pkt[0] = 0x30 | (retain ? 0x01 : 0x00);  /* PUBLISH QoS 0, retain=bit0 */
     pkt[1] = (uint8_t)(pos - 2);
 
     return ESP8266_SendTCP(pkt, pos);
@@ -1333,7 +1338,7 @@ uint8_t ESP8266_CheckHealth(void)
     {
 #if USE_MQTT
         U1_PRINTF("[ESP8266] %d send fails, reconnecting MQTT...\r\n", s_send_fail_count);
-        if (ESP8266_MQTTConnect()) ESP8266_MQTTSubscribe();
+        if (ESP8266_MQTTConnect()) { if (ESP8266_MQTTSubscribe()) { s_mqtt_ok = 1; MQTT_ReportLightStatus(); MQTT_ReportModeStatus(); } }
 #else
         U1_PRINTF("[ESP8266] %d send fails, reconnecting UDP...\r\n", s_send_fail_count);
         ESP8266_ConnectUDP(ESP8266_UDP_SERVER_IP, ESP8266_UDP_SERVER_PORT);
