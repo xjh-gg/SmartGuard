@@ -13,7 +13,6 @@
   */
 
 /* ============ 编译开关（必须在 include 之前定义）============ */
-#define USE_MATRIX_KEY  0
 #define USE_BOARD_KEY   1
 #define USE_MPU6050     1   /* 0=未接 MPU6050  1=已接，启用 6 轴传感器 */
 
@@ -30,9 +29,6 @@
 #include "adc.h"
 #include "hcsr04.h"
 #include "dht11.h"
-#if USE_MATRIX_KEY
-#include "matrix_key.h"
-#endif
 #if USE_BOARD_KEY
 #include "key.h"
 #endif
@@ -407,25 +403,6 @@ static void SampleAllSensors(void)
 }
 
 /* ============ 按键处理 ============ */
-#if USE_MATRIX_KEY
-static void HandleMatrixKey(void)
-{
-    char key = Key_Scan();
-    if (key == 0) return;
-
-    switch (key) {
-        case 'A': g_mode = MODE_HOME;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE HOME\r\n");  MQTT_ReportModeStatus();  break;
-        case 'B': g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE AWAY\r\n");  MQTT_ReportModeStatus();  break;
-        case 'C': g_mode = MODE_SLEEP; DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE SLEEP\r\n"); MQTT_ReportModeStatus(); break;
-        case 'D':
-            g_manual_alert = ALERT_INTRUSION;
-            g_last_alarm_tick = 0;   /* 强制立即发送 */
-            USART1_SendString("-> MANUAL ALERT TEST\r\n");
-            break;
-    }
-}
-#endif
-
 #if USE_BOARD_KEY
 static void HandleBoardKey(void)
 {
@@ -737,9 +714,6 @@ int main(void)
         }
 #endif
 
-#if USE_MATRIX_KEY
-        HandleMatrixKey();
-#endif
 #if USE_BOARD_KEY
         HandleBoardKey();
 #endif
