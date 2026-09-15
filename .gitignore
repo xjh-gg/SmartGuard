@@ -55,9 +55,13 @@ Thumbs.db
 *.rar
 *.zip
 
-# Python scripts (not firmware source)
+# Python scripts (not firmware source) — 但 ML 训练/采集管线与工具脚本必须入库，保证模型可复现
 *.py
 *.ps1
+!v1_train/*.py
+!v1_train/*.ps1
+!tools/*.py
+!tools/*.ps1
 
 # Temporary and test files
 test_image.jpg

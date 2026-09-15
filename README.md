@@ -178,6 +178,7 @@ mosquitto_sub -h 192.168.137.1 -p 1883 -t 'home/#' -v
 11. **注释滞后于代码**：`decision_engine.h:8` 写 OLED 用 PB3/PB5/PB9，实际 PB0/PF11/PC13 且 PB9 是软件 I2C SDA；`iwdg.h:17` 写 1s，实际 2s；**启动横幅打印 `v0.4`，版本记录已演进到 `v0.6.2`**（源码 `main.c:451` 未修正）。
 12. **MQTT 断网后恢复需 30s~5min，取决于网络状况**：这不是重试退避，而是**健康检查周期**决定的。`ESP8266_CheckHealth()` 只在 `loop_tick % 3000` 时调用（标称 300s，叠加第 4 条的 16% 偏差实测约 348s），其内部还要求 `s_send_fail_count >= 3` 才重建 MQTT；该计数在每次 `AT+CIPSEND` 拿不到 `>` 时 +1，而遥测每约 11.6s 发一次，攒满 3 次约需 35s。故断网恰好发生在健康检查之前 → 约 30~40s 恢复；刚错过一次健康检查 → 最坏要等满一个周期，约 5~5.8min。
 13. **broker 为外部 Windows 原生 mosquitto 服务，仓库内无配置无启动脚本**：实测进程名 `mosquitto`（PID 5684，非 Docker），同一进程同时监听 **TCP 1883**（固件 MQTT）与 **WebSocket 9001**（前端 WebSocket）。配置文件位于 `C:\Program Files (x86)\mosquitto\mosquitto.conf`，不在本仓库也不在上级目录。仓库声称的 `cd .. && ./start_mqtt.bat` 在 `D:\Projects\workspace\` 及其上级 **全盘不存在**。读者要复现前端连接，必须**自行安装 Windows mosquitto 原生服务**，在 `mosquitto.conf` 里新增一条 `listener 9001 protocol websockets`，然后启动服务。
+14. **编译验证需注意陈旧构建**：Keil UV4 的增量构建在某些情况下会使用陈旧目标文件，导致"0 Error 0 Warning"但实际未编入改动（2026-09 实测：一次构建 ZI-data 未随新增静态缓冲增长，下次全量 Rebuild 才补入 +128）。请用 `User\build_verify.bat` 验证：脚本会检查"Rebuild target"全量标记并比对所有源文件与目标文件的时间戳，避免假阳性。
 
 ## 版本记录
 
