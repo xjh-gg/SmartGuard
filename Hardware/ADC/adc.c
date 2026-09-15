@@ -104,8 +104,13 @@ static uint16_t ADC_ReadChannel(ADC_TypeDef *ADCx, uint8_t channel)
 
     ADC_SoftwareStartConv(ADCx);
 
+    /* EOC 等待加超时：480 周期采样正常约 25us，上限给足余量。
+       ADC 挂死时返回 0xFFFF（超出 12 位量程的哨兵值）降级处理，
+       不再死等到 2s 看门狗复位整板 */
+    uint32_t timeout = 100000;
     while (ADC_GetFlagStatus(ADCx, ADC_FLAG_EOC) == RESET)
     {
+        if (--timeout == 0) return 0xFFFF;
     }
 
     return ADC_GetConversionValue(ADCx);
