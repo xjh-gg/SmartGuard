@@ -49,6 +49,7 @@ typedef struct {
     float    mq2_ewma;
     float    temp_ewma;
     float    humi_ewma;
+    float    dist_ewma;             /* 距离 EWMA 基线：ML dist_dev 特征的减数 */
 
     /* 告警阈值（由 baseline + k*sigma 得到） */
     uint16_t mq2_fire_threshold;    /* 烟雾 > 此值 → 触发火灾告警（需同时满足温度条件） */
@@ -59,7 +60,7 @@ typedef struct {
 /* ========== 接口函数 ========== */
 void AT_Init(void);
 void AT_LearnBaseline(void);                      /* 上电后阻塞执行基线学习 */
-void AT_Update(uint16_t light, uint16_t mq2, float temp, float humi); /* 每次主循环调用，更新 EWMA */
+void AT_Update(uint16_t light, uint16_t mq2, float temp, float humi, float dist); /* 每次主循环调用，更新 EWMA */
 
 /* 告警判断：返回 1=触发，0=未触发 */
 uint8_t AT_CheckFire(const Sensor_Data_t *data);

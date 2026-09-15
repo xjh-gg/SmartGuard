@@ -25,6 +25,7 @@ static uint16_t s_buf_light[AT_LEARN_MAX];
 static uint16_t s_buf_mq2[AT_LEARN_MAX];
 static float    s_buf_temp[AT_LEARN_MAX];
 static float    s_buf_humi[AT_LEARN_MAX];
+static float    s_buf_dist[AT_LEARN_MAX];
 
 /* ========== helpers ========== */
 static float mean_u16(const uint16_t *buf, uint8_t n)
@@ -99,6 +100,7 @@ void AT_LearnBaseline(void)
         s_buf_mq2[i]   = d->mq2_adc;
         s_buf_temp[i]  = d->temperature;
         s_buf_humi[i]  = d->humidity;
+        s_buf_dist[i]  = d->distance;
         USART1_Printf("[AT] 采样 %2d/%d  light=%4d mq2=%4d temp=%.1f humi=%.1f\r\n",
                       i + 1, n,
                       s_buf_light[i], s_buf_mq2[i],
@@ -111,6 +113,7 @@ void AT_LearnBaseline(void)
     float m_mq2   = mean_u16(s_buf_mq2, n);
     float m_temp  = mean_f(s_buf_temp, n);
     float m_humi  = mean_f(s_buf_humi, n);
+    float m_dist  = mean_f(s_buf_dist, n);
 
     /* 计算标准差 */
     s_bl.light_sigma = (uint16_t)sigma_u16(s_buf_light, n, m_light);
@@ -129,6 +132,7 @@ void AT_LearnBaseline(void)
     s_bl.mq2_ewma   = m_mq2;
     s_bl.temp_ewma  = m_temp;
     s_bl.humi_ewma  = m_humi;
+    s_bl.dist_ewma  = m_dist;
 
     /* 动态阈值：烟雾触发 = baseline + k*sigma（最少 400，避免环境 sigma 很小时阈值太低） */
     uint16_t calc = (uint16_t)(m_mq2 + AT_SIGMA_K * (float)s_bl.mq2_sigma);
@@ -156,7 +160,7 @@ void AT_LearnBaseline(void)
   * @brief  运行期更新 EWMA（指数加权移动平均）
   *         每次主循环调用，慢慢吸收环境慢变化
   */
-void AT_Update(uint16_t light, uint16_t mq2, float temp, float humi)
+void AT_Update(uint16_t light, uint16_t mq2, float temp, float humi, float dist)
 {
     if (!s_bl.is_learned) return;
 
@@ -187,6 +191,16 @@ void AT_Update(uint16_t light, uint16_t mq2, float temp, float humi)
 
     /* 光照：昼夜会大幅变化，所以对光照用更强的 EWMA */
     s_bl.light_ewma += (AT_EWMA_ALPHA * 2.0f) * diff_light;
+
+    /* 距离：alpha 与其他量一致。dist_ewma 未持久化到 Flash，
+       掉电恢复后为 0，此时用首个有效样本直接播种，避免从 0 缓慢收敛 */
+    if (dist > 0.0f) {
+        if (s_bl.dist_ewma <= 0.0f) {
+            s_bl.dist_ewma = dist;
+        } else {
+            s_bl.dist_ewma += AT_EWMA_ALPHA * (dist - s_bl.dist_ewma);
+        }
+    }
 }
 
 /**
