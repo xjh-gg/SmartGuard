@@ -35,6 +35,7 @@
 #include "sensor_hub.h"
 #include "decision_engine.h"   /* 已经 include USE_OLED/USE_ESP8266 定义 */
 #include "adaptive_threshold.h"
+#include "scheduler.h"
 #include "oled.h"
 #include "iwdg.h"
 #include "config_store.h"
@@ -119,7 +120,6 @@ static float   s_gyro_zero_gy = 0.0f;
 static float   s_gyro_zero_gz = 0.0f;
 
 /* ============ MQTT 回调（替代原巴法云） ============ */
-static uint32_t s_mqtt_last_ping_tick = 0;
 
 /* 灯状态跟踪（供 MQTT_ReportLightStatus 和 MQTT_OnCmdReceived 使用）：
    'on' = PE13 低电平点亮；'off' = PE13 高电平熄灭。
@@ -441,6 +441,187 @@ static void BootLearnProgress(uint8_t done, uint8_t total)
 }
 #endif
 
+/* ============ 调度任务（scheduler，周期基于真实 g_tick，无时漂） ============ */
+
+/* 0 周期：每轮必跑 —— MQTT 下行处理（保延迟）+ 按键 + 喂狗（看门狗不进长周期任务） */
+static void task_fast(void)
+{
+#if USE_MQTT
+    ESP8266_MQTTProcessRx();
+#endif
+#if USE_BOARD_KEY
+    HandleBoardKey();
+#endif
+    IWDG_Feed();
+}
+
+/* 防拆检测：200ms（5Hz）。注册顺序在 task_decision 之前，
+   同一轮到期时先刷新 tamper 标志再交给决策引擎 */
+static void task_tamper(void)
+{
+    TamperUpdate();
+}
+
+/* 每 2s 采集 + 决策 + 告警统一出口 */
+static void task_decision(void)
+{
+    SampleAllSensors();
+
+    /* 决策引擎 */
+    g_alert = DecisionEngine_Run(&g_sensor);
+
+    USART1_Printf("[%lus] L=%4d D=%.1fcm T=%.0fC H=%.0f%% | %s | %s\r\n",
+        g_tick / 1000,
+        g_sensor.light_adc, g_sensor.distance,
+        g_sensor.temperature, g_sensor.humidity,
+        g_mode == MODE_HOME ? "HOME " : g_mode == MODE_AWAY ? "AWAY " : "SLEEP",
+        g_alert == ALERT_NONE ? "OK" :
+        g_alert == ALERT_INTRUSION ? "!!INTRUSION!!" :
+        g_alert == ALERT_FIRE ? "!!FIRE!!" :
+        g_alert == ALERT_TAMPER ? "!!TAMPER!!" : "!!ENV!!");
+
+    /* 告警处理 —— 统一出口（决策引擎 + 手动测试） */
+    {
+        Alert_Type_t effective = (g_manual_alert != ALERT_NONE) ? g_manual_alert : g_alert;
+        static Alert_Type_t s_last_effective = ALERT_NONE;
+        uint32_t now = g_tick / 1000;   /* 真实秒 */
+        uint8_t state_changed = (effective != s_last_effective);
+
+        if (effective != ALERT_NONE) {
+            if (state_changed || now - g_last_alarm_tick >= 5) {
+                LED_Toggle(1);
+
+#if USE_ESP8266
+    #if USE_MQTT
+                if (effective == ALERT_INTRUSION)
+                    ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Intrusion!", 0);
+                else if (effective == ALERT_FIRE)
+                    ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Fire!", 0);
+                else if (effective == ALERT_TAMPER)
+                    ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Tamper!", 0);
+                else
+                    ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:EnvAbnormal!", 0);
+    #else
+                if (effective == ALERT_INTRUSION)
+                    ESP8266_SendAlert("Intrusion!");
+                else if (effective == ALERT_FIRE)
+                    ESP8266_SendAlert("Fire!");
+                else if (effective == ALERT_TAMPER)
+                    ESP8266_SendAlert("Tamper!");
+                else
+                    ESP8266_SendAlert("EnvAbnormal!");
+    #endif
+#endif
+
+#if USE_ESP32_CAM
+                if (effective == ALERT_INTRUSION) {
+                    char cam_url[96];
+                    ESP32CAM_Status_t cam_st = ESP32CAM_TriggerCapture(cam_url, sizeof(cam_url));
+#if USE_OLED
+                    s_cam_ok = (cam_st == CAM_OK) ? 1 : 0;
+#endif
+                    if (cam_st == CAM_OK) {
+                        USART1_Printf("[ESP32-CAM] photo: %s\r\n", cam_url);
+                    } else if (cam_st == CAM_OFFLINE) {
+                        USART1_SendString("[ESP32-CAM] offline\r\n");
+                    } else {
+                        USART1_Printf("[ESP32-CAM] failed (%d)\r\n", cam_st);
+                    }
+                }
+#endif
+
+                g_last_alarm_tick = now;
+                g_manual_alert = ALERT_NONE;  /* 手动告警发完即清 */
+            }
+        } else {
+            LED_OFF(1);
+        }
+        s_last_effective = effective;
+    }
+}
+
+/* 每 1s：RTC 秒刷新 + OLED 刷新（含 WiFi/MQTT 状态采样） */
+static void task_display(void)
+{
+#if USE_RTC
+    SG_RTC_FormatTime(s_time_buf, sizeof(s_time_buf));
+    USART1_Printf("[RTC] %s\r\n", s_time_buf);
+#endif
+
+#if USE_OLED
+#if USE_ESP8266
+    s_wifi_status = ESP8266_IsWiFiOk() ? "W+" : "W-";
+    #if USE_MQTT
+    s_mqtt_status = ESP8266_IsMQTTOk() ? "M+" : "M-";
+    #endif
+#endif
+    if (g_alert != ALERT_NONE) {
+        OLED_ShowAlertPage(&g_sensor, g_alert, s_time_buf, s_cam_ok);
+    } else {
+        OLED_ShowHomeScreen(&g_sensor, g_mode, s_time_buf,
+                            s_wifi_status, s_mqtt_status);
+    }
+#endif
+}
+
+#if USE_MQTT
+/* 每 10s：遥测上报 + MQ2 阈值调试行（原决策块 %100 调试行，同 10s 节拍） */
+static void task_telemetry(void)
+{
+    char mqtt_msg[64];
+    sprintf(mqtt_msg, "T=%.0f,H=%.0f,D=%.0f,L=%d,M=%d",
+            g_sensor.temperature, g_sensor.humidity,
+            g_sensor.distance, g_sensor.light_adc,
+            (int)g_sensor.mq2_adc);
+    ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, mqtt_msg, 0);
+
+    /* 运行期阈值真值：阈值靠 EWMA(alpha=0.01) 漂移，是慢变量，10s 粒度足够 */
+    USART1_Printf("[DBG] MQ2=%d th=%d T=%.1fC dist_base=%.1f\r\n",
+                  g_sensor.mq2_adc, AT_GetBaseline()->mq2_fire_threshold,
+                  g_sensor.temperature, AT_GetBaseline()->dist_ewma);
+}
+
+/* MQTT 心跳 PINGREQ：每 MQTT_KEEPALIVE_SEC/2 秒（60/2 = 30s） */
+static void task_ping(void)
+{
+    ESP8266_MQTTPing();
+}
+#endif
+
+#if USE_ESP8266
+/* 每 5 分钟：ESP8266 网络健康检查 */
+static void task_health(void)
+{
+    ESP8266_CheckHealth();
+}
+#endif
+
+#if ML_DATA_COLLECT
+/* 每 2s：ML 数据采集 CSV 行（串口 + UDP） */
+static void task_ml_collect(void)
+{
+    uint32_t t = g_tick / 1000;
+    char csv_buf[128];
+    const char *mode_str = g_mode == MODE_HOME ? "HOME" :
+                           g_mode == MODE_AWAY ? "AWAY" : "SLEEP";
+    const char *alert_str = g_alert == ALERT_NONE ? "0" :
+                            g_alert == ALERT_INTRUSION ? "1" :
+                            g_alert == ALERT_FIRE ? "2" :
+                            g_alert == ALERT_TAMPER ? "3" : "4";
+    int n = snprintf(csv_buf, sizeof(csv_buf),
+        "%lu,%u,%.1f,%.1f,%.1f,%s,%s\r\n",
+        t, g_sensor.light_adc, g_sensor.distance,
+        g_sensor.temperature, g_sensor.humidity,
+        mode_str, alert_str);
+    USART1_SendString(csv_buf);
+#if USE_ESP8266
+    /* 直接发原始 CSV 行到 UDP（绕过 SendData 的 JSON 包装） */
+    extern uint8_t ESP8266_SendUDP(uint8_t *data, uint16_t len);
+    ESP8266_SendUDP((uint8_t *)csv_buf, (uint16_t)n);
+#endif
+}
+#endif
+
 /* ============ 主函数 ============ */
 int main(void)
 {
@@ -490,7 +671,6 @@ int main(void)
         else if (!ESP8266_MQTTSubscribe())
             USART1_Printf("[MQTT] Resubscribe after NTP failed\r\n");
         else {
-            s_mqtt_last_ping_tick = 0;
             MQTT_ReportLightStatus();   /* 重连成功立刻上报灯状态（broker retain） */
             MQTT_ReportModeStatus();    /* 重连成功立刻上报模式状态（broker retain） */
         }
@@ -551,189 +731,31 @@ int main(void)
     USART1_SendString("CSV_HEADER:tick,light,distance_cm,temp_c,humi_pct,mode,alert\r\n");
 #endif
 
-    /* ========== 主循环 ========== */
-    uint32_t loop_tick = 0;
-
-    while (1) {
+    /* ========== 调度器启动（注册任务后永不返回；任务实现见上方 task_* 函数） ========== */
+    scheduler_init();
+    scheduler_add_task(task_fast, 0);          /* MQTT 下行 + 按键 + 喂狗（每轮必跑） */
+    scheduler_add_task(task_tamper, 200);      /* 防拆 5Hz（须在 task_decision 前注册） */
+    scheduler_add_task(task_decision, 2000);   /* 采样 + 决策 + 告警统一出口 */
+    scheduler_add_task(task_display, 1000);    /* RTC 秒刷 + OLED 刷新 */
 #if USE_MQTT
-        ESP8266_MQTTProcessRx();   /* 主循环每次都调，处理下行 PUBLISH */
+    scheduler_add_task(task_telemetry, 10000); /* 遥测 + MQ2 阈值调试行 */
+    scheduler_add_task(task_ping, MQTT_KEEPALIVE_SEC * 1000 / 2);   /* 30s 心跳 */
 #endif
-        delay_ms(100);
-        loop_tick++;
-
-    #if USE_MQTT
-        if (loop_tick % 100 == 0) {   /* 100 x 100ms = 10 seconds */
-            char mqtt_msg[64];
-            sprintf(mqtt_msg, "T=%.0f,H=%.0f,D=%.0f,L=%d,M=%d",
-                    g_sensor.temperature, g_sensor.humidity,
-                    g_sensor.distance, g_sensor.light_adc,
-                    (int)g_sensor.mq2_adc);
-            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, mqtt_msg, 0);
-        }
-
-        /* MQTT 心跳 PINGREQ：每 MQTT_KEEPALIVE_SEC / 2 秒发一次 */
-        if (loop_tick - s_mqtt_last_ping_tick >= MQTT_KEEPALIVE_SEC * 10 / 2) {
-            ESP8266_MQTTPing();
-            s_mqtt_last_ping_tick = loop_tick;
-        }
-    #endif
-
-        /* 防拆检测独立高频采样：200ms 一次（5Hz）。
-           必须在下面的 2s 决策块之前：tick 20 同时满足 %2，先刷新标志再交给决策引擎 */
-        if (loop_tick % 2 == 0) {
-            TamperUpdate();
-        }
-
-        /* 每 2s 采集 + 决策 */
-        if (loop_tick % 20 == 0) {
-            SampleAllSensors();
-
-            /* 决策引擎 */
-            g_alert = DecisionEngine_Run(&g_sensor);
-
-            USART1_Printf("[%lus] L=%4d D=%.1fcm T=%.0fC H=%.0f%% | %s | %s\r\n",
-                loop_tick / 10,
-                g_sensor.light_adc, g_sensor.distance,
-                g_sensor.temperature, g_sensor.humidity,
-                g_mode == MODE_HOME ? "HOME " : g_mode == MODE_AWAY ? "AWAY " : "SLEEP",
-                g_alert == ALERT_NONE ? "OK" :
-                g_alert == ALERT_INTRUSION ? "!!INTRUSION!!" :
-                g_alert == ALERT_FIRE ? "!!FIRE!!" :
-                g_alert == ALERT_TAMPER ? "!!TAMPER!!" : "!!ENV!!");
-
-            /* 运行期阈值真值：学习期那条 "[AT] ... fire_th=" 是一次性快照，
-               此后 AT_Update 每 2s 重算阈值，只有这里能看到实时值和 MQ2 余量。
-               降频到 10s：阈值靠 EWMA(alpha=0.01) 漂移，是慢变量，2s 粒度只是噪音。
-               外层已是 %20（2s），100 是 20 的整数倍，故与 10s 遥测同拍不错位。 */
-            if (loop_tick % 100 == 0) {
-                USART1_Printf("[DBG] MQ2=%d th=%d T=%.1fC dist_base=%.1f\r\n",
-                              g_sensor.mq2_adc, AT_GetBaseline()->mq2_fire_threshold,
-                              g_sensor.temperature, AT_GetBaseline()->dist_ewma);
-            }
-
-            /* 告警处理 —— 统一出口（决策引擎 + 手动测试） */
-            {
-                Alert_Type_t effective = (g_manual_alert != ALERT_NONE) ? g_manual_alert : g_alert;
-                static Alert_Type_t s_last_effective = ALERT_NONE;
-                uint32_t now = loop_tick / 10;
-                uint8_t state_changed = (effective != s_last_effective);
-
-                if (effective != ALERT_NONE) {
-                    if (state_changed || now - g_last_alarm_tick >= 5) {
-                        LED_Toggle(1);
-
-#if USE_ESP8266
-    #if USE_MQTT
-                        if (effective == ALERT_INTRUSION)
-                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Intrusion!", 0);
-                        else if (effective == ALERT_FIRE)
-                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Fire!", 0);
-                        else if (effective == ALERT_TAMPER)
-                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Tamper!", 0);
-                        else
-                            ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:EnvAbnormal!", 0);
-    #else
-                        if (effective == ALERT_INTRUSION)
-                            ESP8266_SendAlert("Intrusion!");
-                        else if (effective == ALERT_FIRE)
-                            ESP8266_SendAlert("Fire!");
-                        else if (effective == ALERT_TAMPER)
-                            ESP8266_SendAlert("Tamper!");
-                        else
-                            ESP8266_SendAlert("EnvAbnormal!");
-    #endif
-#endif
-
-#if USE_ESP32_CAM
-                        if (effective == ALERT_INTRUSION) {
-                            char cam_url[96];
-                            ESP32CAM_Status_t cam_st = ESP32CAM_TriggerCapture(cam_url, sizeof(cam_url));
-#if USE_OLED
-                            s_cam_ok = (cam_st == CAM_OK) ? 1 : 0;
-#endif
-                            if (cam_st == CAM_OK) {
-                                USART1_Printf("[ESP32-CAM] photo: %s\r\n", cam_url);
-                            } else if (cam_st == CAM_OFFLINE) {
-                                USART1_SendString("[ESP32-CAM] offline\r\n");
-                            } else {
-                                USART1_Printf("[ESP32-CAM] failed (%d)\r\n", cam_st);
-                            }
-                        }
-#endif
-
-                        g_last_alarm_tick = now;
-                        g_manual_alert = ALERT_NONE;  /* 手动告警发完即清 */
-                    }
-                } else {
-                    LED_OFF(1);
-                }
-                s_last_effective = effective;
-            }
-        }
-
-        /* ============ ESP8266 网络健康检查：每 5 分钟 ============ */
-#if USE_ESP8266
-        if (loop_tick % 3000 == 0) {
-            ESP8266_CheckHealth();
-        }
-#endif
-
-        /* ============ ML 数据采集：每 2s 输出 CSV 行 ============ */
 #if ML_DATA_COLLECT
-        if (loop_tick % 20 == 0) {
-            uint32_t t = loop_tick / 10;
-            char csv_buf[128];
-            const char *mode_str = g_mode == MODE_HOME ? "HOME" :
-                                   g_mode == MODE_AWAY ? "AWAY" : "SLEEP";
-            const char *alert_str = g_alert == ALERT_NONE ? "0" :
-                                    g_alert == ALERT_INTRUSION ? "1" :
-                                    g_alert == ALERT_FIRE ? "2" :
-                                    g_alert == ALERT_TAMPER ? "3" : "4";
-            int n = snprintf(csv_buf, sizeof(csv_buf),
-                "%lu,%u,%.1f,%.1f,%.1f,%s,%s\r\n",
-                t, g_sensor.light_adc, g_sensor.distance,
-                g_sensor.temperature, g_sensor.humidity,
-                mode_str, alert_str);
-            USART1_SendString(csv_buf);
+    scheduler_add_task(task_ml_collect, 2000); /* ML 数据采集 CSV */
+#endif
 #if USE_ESP8266
-            /* 直接发原始 CSV 行到 UDP（绕过 SendData 的 JSON 包装） */
-            extern uint8_t ESP8266_SendUDP(uint8_t *data, uint16_t len);
-            ESP8266_SendUDP((uint8_t *)csv_buf, (uint16_t)n);
+    scheduler_add_task(task_health, 300000);   /* 5min 网络健康检查 */
 #endif
-        }
-#endif
+    scheduler_run();   /* 永不返回：空闲 __WFI 休眠，SysTick 1ms 唤醒，周期零漂移 */
 
-        /* ★ RTC 秒刷新 + OLED 每秒刷新 (每 10 tick = 1 秒)
-         * 不再依赖 RTC Wakeup 中断，改为直接读 RTC 日历时间 */
-#if USE_RTC
-        if (loop_tick % 10 == 0) {
-            SG_RTC_FormatTime(s_time_buf, sizeof(s_time_buf));
-            USART1_Printf("[RTC] %s\r\n", s_time_buf);
-        }
-#endif
 
-#if USE_OLED
-        if (loop_tick % 10 == 0) {
-#if USE_ESP8266
-            s_wifi_status = ESP8266_IsWiFiOk() ? "W+" : "W-";
-    #if USE_MQTT
-            s_mqtt_status = ESP8266_IsMQTTOk() ? "M+" : "M-";
-    #endif
-#endif
-            if (g_alert != ALERT_NONE) {
-                OLED_ShowAlertPage(&g_sensor, g_alert, s_time_buf, s_cam_ok);
-            } else {
-                OLED_ShowHomeScreen(&g_sensor, g_mode, s_time_buf,
-                                    s_wifi_status, s_mqtt_status);
-            }
-        }
-#endif
 
-#if USE_BOARD_KEY
-        HandleBoardKey();
-#endif
 
-        /* 喂独立看门狗（2s 超时，主循环 100ms tick 足够） */
-        IWDG_Feed();
-    }
+
+
+
+
+
+
 }
