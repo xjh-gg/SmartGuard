@@ -12,11 +12,25 @@
 #include "oled.h"
 #include "delay.h"
 #include "oledfont.h"
+#include "adaptive_threshold.h"   /* AT_GetBaseline：dist_base 进度条刻度 */
 #include <stdio.h>
 #include <string.h>
 
 /* ============ 前置声明 ============ */
 static uint32_t oled_pow(uint8_t m, uint8_t n);
+
+/* ============ 主界面局部刷新缓存 ============
+   每行缓存上次文本，相同不重绘（消除 1Hz 整屏闪烁）。
+   清屏 / 告警页覆盖后必须调 home_cache_reset() 强制全量重绘。 */
+static char s_home_row[4][20];
+static uint8_t s_home_bar  = 0xFF;   /* 0xFF = 强制首绘 */
+static uint8_t s_home_tick = 0xFF;
+
+static void home_cache_reset(void)
+{
+    s_home_row[0][0] = s_home_row[1][0] = s_home_row[2][0] = s_home_row[3][0] = '\0';
+    s_home_bar = s_home_tick = 0xFF;
+}
 
 /* ============ SPI 软件模拟发送 1 字节 ============
    SSD1306 SPI Mode 0: CLK idle LOW, 上升沿采样
@@ -65,6 +79,8 @@ static void OLED_Set_Pos(uint8_t x, uint8_t y)
 
 void OLED_Clear(void)
 {
+    home_cache_reset();   /* 清屏后主页缓存全部失效，下次强制全量重绘 */
+
     uint8_t i, n;
     for (i = 0; i < 8; i++)
     {
@@ -379,54 +395,110 @@ void OLED_ShowStatusBar(Guard_Mode_t mode, const char *time_str, const char *wif
     OLED_ShowString(112, 0, wifi_status);
 }
 
+/* ============ SmartGuard 主界面 v5 (状态中心, 一看就懂) ============
+   128x64 (8x16 字体 = 2 page/行, 16 字符/行):
+   +--------------------------------+
+   | AWAY 14:32:05                  |  page 0-1: 全拼模式 + 时间
+   |                                |   网络异常时整行换成 !OFFLINE! / !NO MQTT!
+   |     ALL  OK                    |  page 2-3: 状态大字（视觉中心）
+   | 26C  59%  GOOD                 |  page 4-5: 温度 湿度 空气结论(不给原始值)
+   | 140cm  ██████░░░░░░ |          |  page 6-7: 距离数字 + 进度条 + dist_base 刻度
+   +--------------------------------+
+
+   局部刷新：每行文本与缓存 strcmp 相同则不重绘；进度条仅长度/刻度
+   变化才重画 page 7 的条形区（x=48..128，不碰左侧文本下半页）。 */
+
+/* 行重绘助手：文本变了才清写该行（2 page） */
+static void home_draw_row(uint8_t idx, uint8_t page, const char *text)
+{
+    if (strcmp(s_home_row[idx], text) == 0) return;
+    OLED_ClearArea(0, page, 128);
+    OLED_ClearArea(0, page + 1, 128);
+    OLED_ShowString(0, page, text);
+    snprintf(s_home_row[idx], 20, "%s", text);
+    if (idx == 3) s_home_bar = 0xFF;   /* 第 4 行重绘会擦掉进度条区域，强制条重画 */
+}
+
 void OLED_ShowHomeScreen(Sensor_Data_t *data, Guard_Mode_t mode,
                          const char *time_str, const char *wifi_status,
                          const char *mqtt_status)
 {
-    /* 模式 2 字母缩写，下标与 Guard_Mode_t 枚举顺序（HOME/AWAY/SLEEP）严格对应 */
-    static const char *const mode_abbr[3] = { "HO", "AW", "SL" };
-    const char *mtxt = ((unsigned)mode < 3u) ? mode_abbr[mode] : "??";
+    /* 全拼模式名，下标与 Guard_Mode_t 枚举顺序（HOME/AWAY/SLEEP）严格对应 */
+    static const char *const mode_names[3] = { "HOME", "AWAY", "SLEEP" };
+    const char *mtxt = ((unsigned)mode < 3u) ? mode_names[mode] : "???";
     char buf[24];
+    uint8_t bar, tick, i;
+    uint16_t dist_cm;
 
-    /* 行 1 (page 0-1): 模式 · 时间 · WiFi · MQTT —— 恒定 16 字符 */
-    OLED_ClearArea(0, 0, 128);
-    OLED_ClearArea(0, 1, 128);
-    snprintf(buf, sizeof(buf), "%s %s %s%s", mtxt, time_str, wifi_status, mqtt_status);
-    OLED_ShowString(0, 0, buf);
+    /* 行 1 (page 0-1): 模式 + 时间；网络异常时故障信息取代时间（故障 > 时钟） */
+    if (wifi_status[1] == '-')         /* "W-" */
+        snprintf(buf, sizeof(buf), "%s !OFFLINE!", mtxt);
+    else if (mqtt_status[1] == '-')    /* "M-" */
+        snprintf(buf, sizeof(buf), "%s !NO MQTT!", mtxt);
+    else
+        snprintf(buf, sizeof(buf), "%s %s", mtxt, time_str);
+    home_draw_row(0, 0, buf);
 
-    /* 行 2 (page 2-3): 温度整数 + 湿度整数 */
-    OLED_ClearArea(0, 2, 128);
-    OLED_ClearArea(0, 3, 128);
-    snprintf(buf, sizeof(buf), "T%dC H%d%%", (int)data->temperature, (int)data->humidity);
-    OLED_ShowString(0, 2, buf);
+    /* 行 2 (page 2-3): 状态大字（告警时由 AlertPage 整屏抢占，不会走到这里） */
+    home_draw_row(1, 2, "    ALL  OK");
 
-    /* 行 3 (page 4-5): 光照百分比 + 距离 cm */
-    OLED_ClearArea(0, 4, 128);
-    OLED_ClearArea(0, 5, 128);
-    snprintf(buf, sizeof(buf), "L%u%% D%dcm",
-             (unsigned)light_to_pct(data->light_adc), (int)data->distance);
-    OLED_ShowString(0, 4, buf);
+    /* 行 3 (page 4-5): 温度 湿度 空气质量结论（MQ2 原始值对用户是噪音，不显示） */
+    snprintf(buf, sizeof(buf), "%dC  %d%%  %s",
+             (int)data->temperature, (int)data->humidity,
+             air_quality_str(data->mq2_adc));
+    home_draw_row(2, 4, buf);
 
-    /* 行 4 (page 6-7): MQ2 原始值 + 空气质量 */
-    OLED_ClearArea(0, 6, 128);
-    OLED_ClearArea(0, 7, 128);
-    snprintf(buf, sizeof(buf), "MQ2%u A %s",
-             (unsigned)data->mq2_adc, air_quality_str(data->mq2_adc));
-    OLED_ShowString(0, 6, buf);
+    /* 行 4 (page 6-7): 距离数字 + 进度条（0-400cm → x48..128 共 80px）
+       + dist_base 刻度（ML 距离基准，虚线样式区别于实心条） */
+    snprintf(buf, sizeof(buf), "%dcm", (int)data->distance);
+    home_draw_row(3, 6, buf);
+
+    dist_cm = (data->distance < 0.0f) ? 0 : (uint16_t)data->distance;
+    if (dist_cm > 400) dist_cm = 400;
+    bar = (uint8_t)(dist_cm * 80 / 400);
+
+    tick = 0;
+    {
+        const AT_Baseline_t *bl = AT_GetBaseline();
+        if (bl && bl->is_learned && bl->dist_ewma > 0.0f && bl->dist_ewma < 400.0f)
+            tick = (uint8_t)((uint16_t)bl->dist_ewma * 80 / 400);
+    }
+
+    if (bar != s_home_bar || tick != s_home_tick) {
+        OLED_ClearArea(48, 7, 80);
+        OLED_Set_Pos(48, 7);
+        for (i = 0; i < 80; i++)
+            OLED_WR_Byte(i < bar ? 0xFF : 0x00, OLED_DATA);
+        if (tick > 0) {
+            OLED_Set_Pos(48 + tick, 7);
+            OLED_WR_Byte(0xAA, OLED_DATA);   /* 交替点线 = dist_base 刻度 */
+        }
+        s_home_bar = bar;
+        s_home_tick = tick;
+    }
 }
 
 void OLED_ShowAlertPage(Sensor_Data_t *data, Alert_Type_t alert, const char *time_str, uint8_t cam_ok)
 {
     char buf[32];
+    static uint8_t s_blink = 0;
 
-    OLED_ClearArea(0, 0, 128); OLED_ClearArea(0, 1, 128);
+    /* 告警页覆盖整屏：主页局部刷新缓存全部作废 */
+    home_cache_reset();
+
+    /* 内容行（page 2-7）每秒全量重绘 */
     OLED_ClearArea(0, 2, 128); OLED_ClearArea(0, 3, 128);
     OLED_ClearArea(0, 4, 128); OLED_ClearArea(0, 5, 128);
     OLED_ClearArea(0, 6, 128); OLED_ClearArea(0, 7, 128);
 
+    /* 标题行（page 0-1）1Hz 闪烁：每拍先清，奇数拍才重画 */
+    s_blink++;
+    OLED_ClearArea(0, 0, 128);
+    OLED_ClearArea(0, 1, 128);
+
     switch (alert) {
         case ALERT_INTRUSION:
-            OLED_ShowString(8, 0, "!! INTRUSION !!");   /* 15 字符 -> 8..128 */
+            if (s_blink & 1) OLED_ShowString(8, 0, "!! INTRUSION !!");   /* 15 字符 -> 8..128 */
             snprintf(buf, sizeof(buf), "DIST: %.1fcm", data->distance);
             OLED_ShowString(0, 2, buf);
             OLED_ShowString(0, 4, cam_ok ? "CAM:  OK" : "CAM:  --");
@@ -435,7 +507,7 @@ void OLED_ShowAlertPage(Sensor_Data_t *data, Alert_Type_t alert, const char *tim
             break;
 
         case ALERT_FIRE:
-            OLED_ShowString(8, 0, "   !! FIRE !!");     /* 13 字符 -> 8..112 */
+            if (s_blink & 1) OLED_ShowString(8, 0, "   !! FIRE !!");     /* 13 字符 -> 8..112 */
             snprintf(buf, sizeof(buf), "MQ2:%u T:%dC",
                      (unsigned)data->mq2_adc, (int)data->temperature);
             OLED_ShowString(0, 2, buf);
@@ -445,7 +517,7 @@ void OLED_ShowAlertPage(Sensor_Data_t *data, Alert_Type_t alert, const char *tim
             break;
 
         case ALERT_ENV_ABNORMAL:
-            OLED_ShowString(8, 0, "  AIR BAD");         /* 9 字符 -> 8..80 */
+            if (s_blink & 1) OLED_ShowString(8, 0, "  AIR BAD");         /* 9 字符 -> 8..80 */
             snprintf(buf, sizeof(buf), "MQ2:%u", (unsigned)data->mq2_adc);
             OLED_ShowString(0, 2, buf);
             OLED_ShowString(0, 4, "CHECK NOW");
@@ -453,37 +525,44 @@ void OLED_ShowAlertPage(Sensor_Data_t *data, Alert_Type_t alert, const char *tim
             break;
 
         case ALERT_TAMPER:
-            OLED_ShowString(8, 0, "  TAMPER");          /* 8 字符 -> 8..72 */
+            if (s_blink & 1) OLED_ShowString(8, 0, "  TAMPER");          /* 8 字符 -> 8..72 */
             OLED_ShowString(0, 2, "DO NOT MOVE");
             OLED_ShowString(0, 4, "CHECK NOW");
             OLED_ShowString(0, 6, time_str);
             break;
 
         default:
-            OLED_ShowString(0, 0, "!! ALERT !!");
+            if (s_blink & 1) OLED_ShowString(0, 0, "!! ALERT !!");
             OLED_ShowString(0, 6, time_str);
             break;
     }
 }
 
+/* ============ 启动进度页 v2 ============
+   布局 (128x64, 8x16 字体 = 2 page/行):
+     page 0-1 : 居中 SmartGuard（去掉过时的 v0.4）
+     page 2-3 : 阶段文案（<=16 字符，全部口语化）
+     page 5   : 128px 图形进度条
+     page 6-7 : 百分比
+   基线学习期由 main.c 回调每秒调用（80→98 平滑推进 + 倒计时），
+   不再出现学习期画面假死 / 错误显示 "System Ready"。 */
 void OLED_ShowBootProgress(uint8_t percent, const char *status)
 {
-    char bar[16];
+    char buf[8];
     uint8_t filled, i;
 
     if (percent > 100) percent = 100;
-    filled = percent / 10;
+    filled = (uint16_t)percent * 128 / 100;
 
-    bar[0] = '[';
-    for (i = 0; i < 10; i++) {
-        bar[1 + i] = (i < filled) ? '=' : ' ';
-    }
-    bar[11] = ']';
-    snprintf(bar + 12, 4, "%-3u", (unsigned)percent);
-    bar[15] = '\0';
+    OLED_Clear();
+    OLED_ShowString(24, 0, "SmartGuard");   /* 10 字符居中: (128-80)/2=24 */
+    OLED_ShowString(0, 2, status);
 
-    OLED_ShowString(0, 0, "SmartGuard v0.4");
-    OLED_ShowString(8, 1, "SECURITY AGENT");   /* 新增 page 1, 14 字符 -> 8..120 居中 */
-    OLED_ShowString(0, 3, bar);
-    OLED_ShowString(0, 5, status);
+    /* 图形进度条：page 5 整行，填充段写 0xFF */
+    OLED_Set_Pos(0, 5);
+    for (i = 0; i < 128; i++)
+        OLED_WR_Byte(i < filled ? 0xFF : 0x00, OLED_DATA);
+
+    snprintf(buf, sizeof(buf), "%u%%", (unsigned)percent);
+    OLED_ShowString(0, 6, buf);
 }

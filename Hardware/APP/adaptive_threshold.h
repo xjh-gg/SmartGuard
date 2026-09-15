@@ -60,6 +60,10 @@ typedef struct {
 /* ========== 接口函数 ========== */
 void AT_Init(void);
 void AT_LearnBaseline(void);                      /* 上电后阻塞执行基线学习 */
+
+/* 学习进度回调：由 main.c 注册（OLED 进度条用），AT_LearnBaseline 每采 1 次调一次 */
+typedef void (*AT_ProgressCb_t)(uint8_t done, uint8_t total);
+void AT_SetProgressCallback(AT_ProgressCb_t cb);
 void AT_Update(uint16_t light, uint16_t mq2, float temp, float humi, float dist); /* 每次主循环调用，更新 EWMA */
 
 /* 告警判断：返回 1=触发，0=未触发 */

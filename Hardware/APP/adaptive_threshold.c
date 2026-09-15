@@ -19,6 +19,14 @@
 
 static AT_Baseline_t s_bl;
 
+/* 学习进度回调（可选，main.c 注册用于 OLED 进度显示） */
+static AT_ProgressCb_t s_progress_cb = NULL;
+
+void AT_SetProgressCallback(AT_ProgressCb_t cb)
+{
+    s_progress_cb = cb;
+}
+
 /* ========== 学习期环形缓冲区 ========== */
 #define AT_LEARN_MAX   30   /* 最大学习采样次数（>= AT_LEARN_SECONDS） */
 static uint16_t s_buf_light[AT_LEARN_MAX];
@@ -105,6 +113,7 @@ void AT_LearnBaseline(void)
                       i + 1, n,
                       s_buf_light[i], s_buf_mq2[i],
                       s_buf_temp[i], s_buf_humi[i]);
+        if (s_progress_cb) s_progress_cb(i + 1, n);
         delay_ms(1000);
     }
 
