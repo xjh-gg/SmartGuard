@@ -306,8 +306,10 @@ uint8_t ESP8266_ConnectUDP(char *ip, uint16_t port)
     ok = ESP8266_SendAT(cmd, "OK", 5000);
     U1_PRINTF("  -> CIPSTART UDP %s\r\n", ok ? "OK" : "FAIL (may be firewall, try anyway)");
 
-    /* 即使 CIPSTART 失败也返回 1 — UDP 无连接，ESP8266 可能仍能发包 */
-    return 1;
+    /* 返回 CIPSTART 的真实结果（原实现恒返回 1，失败被掩盖）。
+       UDP 虽无连接语义、失败后仍可能发出包，但 AT 失败通常意味着
+       模块或参数异常，调用方（esp8266.c:107/1250 等）均有 0/1 分支处理 */
+    return ok;
 }
 
 /**
