@@ -440,7 +440,7 @@ STM32 (USART3)                          ESP8266
      │─── AT+CWMODE=1─────────────────────>│  // 设为 STA 模式
      │<─────────────────────── OK ────────│
      │                                     │
-     │─── AT+CWJAP="<your-ssid> 0997",──>│  // 连接 WiFi（约 10 秒）
+     │─── AT+CWJAP="<your-ssid>",──>│  // 连接 WiFi（约 10 秒）
      │    "<redacted-password>"                       │
      │<─────────────────── WIFI CONNECTED ─│
      │<─────────────────────── OK ────────│
@@ -576,7 +576,7 @@ void ESP8266_SendData(const char *topic, const char *payload);
 **esp8266.h 配置项**：
 
 ```c
-#define ESP8266_WIFI_SSID       "<your-ssid> 0997"
+#define ESP8266_WIFI_SSID       "<your-ssid>"
 #define ESP8266_WIFI_PASSWORD   "<redacted-password>"
 #define ESP8266_UDP_SERVER_IP   "192.168.137.1"
 #define ESP8266_UDP_SERVER_PORT 12345
@@ -654,7 +654,7 @@ HW: OLED=0  ESP8266=1
 [OK] PWM
 [OK] MatrixKey
 [SKIP] OLED (not connected)
-[...] ESP8266 connecting to <your-ssid> 0997...
+[...] ESP8266 connecting to <your-ssid>...
 [...] ESP8266 connecting UDP to 192.168.137.1:12345...
 [...] ESP8266 AT+CIPMUX=0
   -> CIPMUX=0 OK
@@ -773,7 +773,7 @@ start http://localhost:8080
 解决：netsh advfirewall firewall add rule name="SG UDP" dir=in action=allow protocol=UDP localport=12345
 原因2：ipconfig 查错 IP（用了 192.168.1.1 而实际是 192.168.137.1）
 原因3：ESP8266 和电脑不在同一网段
-解决：确认 WiFi 是同一个（电脑连的是 <your-ssid> 0997 吗？）
+解决：确认 WiFi 是同一个（电脑连的是 <your-ssid> 吗？）
 ```
 
 ### 🔴 告警重复发送 80+ 条/秒

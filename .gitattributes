@@ -1,0 +1,5 @@
+# Windows batch files must checkout with CRLF line endings:
+# cmd.exe misparses LF-only .bat files (goto/labels and multibyte
+# handling break). Lock eol=crlf so no editor or git config
+# (core.autocrlf) can change this.
+*.bat text eol=crlf
