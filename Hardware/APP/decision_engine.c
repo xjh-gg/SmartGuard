@@ -120,7 +120,7 @@ static Alert_Type_t CheckIntrusion(const Sensor_Data_t *data)
             float x_raw[4]  = { (float)data->light_adc, data->distance, data->temperature, data->humidity };
             float baseline[4];
             baseline[0] = bl && bl->is_learned ? bl->light_ewma  : 1200.0f;
-            baseline[1] = bl && bl->is_learned ? 0.0f            : 208.0f;
+            baseline[1] = (bl && bl->is_learned && bl->dist_ewma > 0.0f) ? bl->dist_ewma : 208.0f;   /* 208 = 训练集距离中位数（SCALER_MEAN[1] 172.79 - SCALER_MEAN[5] -35.21） */
             baseline[2] = bl && bl->is_learned ? bl->temp_ewma   : 29.0f;
             baseline[3] = bl && bl->is_learned ? bl->humi_ewma   : 44.0f;
             uint8_t pred = ml_predict(x_raw, baseline, SCALER_MEAN, SCALER_SCALE);
@@ -138,7 +138,7 @@ static Alert_Type_t CheckIntrusion(const Sensor_Data_t *data)
         raw = ALERT_INTRUSION;
     }
 
-    /* ===== 连续确认：3 次命中才触发，单次误报过滤 ===== */
+    /* ===== 连续确认：2 次命中才触发，单次误报过滤 ===== */
     if (raw == ALERT_INTRUSION) {
         if (s_intrusion_hit < 5) s_intrusion_hit++;
     } else if (data->distance > INTRUSION_DIST_SOFT) {
@@ -149,7 +149,8 @@ static Alert_Type_t CheckIntrusion(const Sensor_Data_t *data)
     }
     /* 软地带 OK 时 hit 保持不变 */
 
-    if (s_intrusion_hit >= 3) {
+    /* 2026-09 调优：3→2 次，延迟 4~6s → 2~4s，代价是误报率略升 */
+    if (s_intrusion_hit >= 2) {
         s_intrusion_hit = 0;   /* 触发后清零，下次重新累积 */
         return ALERT_INTRUSION;
     }

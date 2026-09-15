@@ -366,7 +366,7 @@ static void TamperUpdate(void)
 
 static void SampleAllSensors(void)
 {
-    float temp = 0, humi = 0;
+    float temp = g_sensor.temperature, humi = g_sensor.humidity;   /* 初值取上次有效值，DHT11 失败时保持不归零 */
     uint16_t light_raw[3];
     float dist_raw[3];
     int i;
@@ -395,13 +395,15 @@ static void SampleAllSensors(void)
         g_sensor.distance = (dm > 0.0f) ? dm : g_sensor.distance;
     }
 
-    DHT11_Read_Data(&temp, &humi);
-    g_sensor.temperature = temp;
-    g_sensor.humidity    = humi;
+    /* DHT11 读取失败时不覆盖 g_sensor，保留上一次有效值（dht11.c 失败不写输出参数） */
+    if (DHT11_Read_Data(&temp, &humi) == 0) {
+        g_sensor.temperature = temp;
+        g_sensor.humidity    = humi;
+    }
     g_sensor.mq2_adc     = ADC_ReadMQ2();
 
     /* AT 基线更新 */
-    AT_Update(g_sensor.light_adc, g_sensor.mq2_adc, temp, humi);
+    AT_Update(g_sensor.light_adc, g_sensor.mq2_adc, g_sensor.temperature, g_sensor.humidity, g_sensor.distance);
 }
 
 /* ============ 按键处理 ============ */
@@ -612,9 +614,9 @@ int main(void)
                降频到 10s：阈值靠 EWMA(alpha=0.01) 漂移，是慢变量，2s 粒度只是噪音。
                外层已是 %20（2s），100 是 20 的整数倍，故与 10s 遥测同拍不错位。 */
             if (loop_tick % 100 == 0) {
-                USART1_Printf("[DBG] MQ2=%d th=%d T=%.1fC\r\n",
+                USART1_Printf("[DBG] MQ2=%d th=%d T=%.1fC dist_base=%.1f\r\n",
                               g_sensor.mq2_adc, AT_GetBaseline()->mq2_fire_threshold,
-                              g_sensor.temperature);
+                              g_sensor.temperature, AT_GetBaseline()->dist_ewma);
             }
 
             /* 告警处理 —— 统一出口（决策引擎 + 手动测试） */
