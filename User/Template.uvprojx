@@ -339,7 +339,7 @@
               <MiscControls></MiscControls>
               <Define>USE_STDPERIPH_DRIVER,STM32F40_41xxx</Define>
               <Undefine></Undefine>
-              <IncludePath>..\User;..\Library\inc;..\Core;..\Hardware\LED;..\Hardware\KEY;..\Hardware\Delay;..\Hardware\USART;..\Hardware\ADC;..\Hardware\PWM;..\Hardware\BEEP;..\Hardware\MATRIX_KEY;..\Hardware\DHT11;..\Hardware\MQ2;..\Hardware\HCSR04;..\Hardware\SERVO;..\Hardware\OLED;..\Hardware\ESP8266;..\Hardware\APP;..\Hardware\ML;..\Hardware\RTC;..\Hardware\ML;..\Hardware\WDG;..\Hardware\CONFIG_STORE;..\Hardware\ESP32_CAM;..\Hardware\IIC;..\Hardware\MPU6050</IncludePath>
+              <IncludePath>..\User;..\Library\inc;..\Core;..\Hardware\LED;..\Hardware\KEY;..\Hardware\Delay;..\Hardware\USART;..\Hardware\ADC;..\Hardware\PWM;..\Hardware\BEEP;..\Hardware\DHT11;..\Hardware\HCSR04;..\Hardware\OLED;..\Hardware\ESP8266;..\Hardware\APP;..\Hardware\ML;..\Hardware\RTC;..\Hardware\ML;..\Hardware\WDG;..\Hardware\CONFIG_STORE;..\Hardware\ESP32_CAM;..\Hardware\IIC;..\Hardware\MPU6050</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -554,16 +554,6 @@
               <FilePath>..\Hardware\BEEP\beep.h</FilePath>
             </File>
             <File>
-              <FileName>matrix_key.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\Hardware\MATRIX_KEY\matrix_key.c</FilePath>
-            </File>
-            <File>
-              <FileName>matrix_key.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\Hardware\MATRIX_KEY\matrix_key.h</FilePath>
-            </File>
-            <File>
               <FileName>dht11.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Hardware\DHT11\dht11.c</FilePath>
@@ -574,16 +564,6 @@
               <FilePath>..\Hardware\DHT11\dht11.h</FilePath>
             </File>
             <File>
-              <FileName>mq2.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\Hardware\MQ2\mq2.c</FilePath>
-            </File>
-            <File>
-              <FileName>mq2.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\Hardware\MQ2\mq2.h</FilePath>
-            </File>
-            <File>
               <FileName>hcsr04.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Hardware\HCSR04\hcsr04.c</FilePath>
@@ -592,16 +572,6 @@
               <FileName>hcsr04.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\Hardware\HCSR04\hcsr04.h</FilePath>
-            </File>
-            <File>
-              <FileName>servo.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\Hardware\SERVO\servo.c</FilePath>
-            </File>
-            <File>
-              <FileName>servo.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\Hardware\SERVO\servo.h</FilePath>
             </File>
             <File>
               <FileName>oled.c</FileName>
