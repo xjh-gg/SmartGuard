@@ -210,24 +210,24 @@ static void Hardware_InitAll(void)
     USART1_SendString("[INIT] OLED SSD1306...");
     OLED_Init();
     USART1_SendString("OK\r\n");
-    OLED_ShowBootProgress(10, "Loading...");
+    OLED_ShowBootProgress(10, "Starting...");
 #endif
 
 #if USE_ESP8266
     USART1_SendString("[INIT] ESP8266 WiFi...");
-    OLED_ShowBootProgress(30, "WiFi Connecting...");
+    OLED_ShowBootProgress(30, "Connecting WiFi");
     if (ESP8266_Init()) {
         USART1_SendString("OK\r\n");
         OLED_ShowBootProgress(50, "WiFi OK");
     } else {
         USART1_SendString("FAIL (no WiFi)\r\n");
-        OLED_ShowBootProgress(50, "WiFi OFFLINE");
+        OLED_ShowBootProgress(50, "Offline mode");
     }
 #endif
 
 #if USE_ESP32_CAM
     USART1_SendString("[INIT] ESP32-CAM...");
-    OLED_ShowBootProgress(55, "ESP32-CAM...");
+    OLED_ShowBootProgress(55, "Camera check...");
     if (ESP32CAM_Init()) {
         USART1_SendString("OK (online)\r\n");
     } else {
@@ -237,7 +237,7 @@ static void Hardware_InitAll(void)
 
 #if USE_RTC
     USART1_SendString("[INIT] RTC Calendar...");
-    OLED_ShowBootProgress(60, "RTC Init...");
+    OLED_ShowBootProgress(60, "Clock sync...");
     SG_RTC_Init();
     USART1_SendString("OK\r\n");
     /* Wakeup Timer 中断不启用（硬件 INITF 异常），秒刷新由主循环轮询完成 */
@@ -245,7 +245,7 @@ static void Hardware_InitAll(void)
 
 #if USE_MPU6050
     USART1_SendString("[INIT] MPU6050...");
-    OLED_ShowBootProgress(65, "Calibrating...");
+    OLED_ShowBootProgress(65, "Gyro calibrating");
     {
         uint8_t mpu_id = MPU6050_Init();
         if (mpu_id == 0) {
@@ -266,7 +266,7 @@ static void Hardware_InitAll(void)
                                       k, rax, ray, raz, ax, ay, az);
                     }
                     if (k == 25) {
-                        OLED_ShowBootProgress(75, "Calibrating...");
+                        OLED_ShowBootProgress(70, "Gyro calibrating");
                     }
                     delay_ms(10);
                 }
@@ -281,11 +281,6 @@ static void Hardware_InitAll(void)
             USART1_Printf("FAIL WHO_AM_I=0x%02X (期望0x68)\r\n", mpu_id);
         }
     }
-#endif
-
-#if USE_OLED
-    OLED_ShowBootProgress(100, "System Ready");
-    delay_ms(800);
 #endif
 }
 
@@ -435,6 +430,17 @@ static void HandleBoardKey(void)
 }
 #endif
 
+#if USE_OLED
+/* 基线学习进度回调：注册给 AT_LearnBaseline，每秒一次。
+   进度 80→98 平滑推进 + 剩余秒数倒计时，消灭学习期画面假死 */
+static void BootLearnProgress(uint8_t done, uint8_t total)
+{
+    char st[20];
+    snprintf(st, sizeof(st), "Learning %us", (unsigned)(total - done));
+    OLED_ShowBootProgress(80 + (uint16_t)18 * done / total, st);
+}
+#endif
+
 /* ============ 主函数 ============ */
 int main(void)
 {
@@ -495,6 +501,10 @@ int main(void)
     DecisionEngine_Init();
     DecisionEngine_SetMode(g_mode);
 
+#if USE_OLED
+    OLED_ShowBootProgress(75, "Network sync...");
+#endif
+
     /* ========== 基线学习（优先从 FLASH 恢复，失败才重新学 20s） ========== */
     AT_Init();
 
@@ -502,9 +512,15 @@ int main(void)
         /* FLASH 有有效配置，直接恢复，跳过 20s 学习 */
         USART1_SendString("[BASELINE] Restored from FLASH (skip 20s learn)\r\n");
         DecisionEngine_SetMode(g_mode);
+#if USE_OLED
+        OLED_ShowBootProgress(98, "Restored!");
+#endif
     } else {
         /* FLASH 无有效数据，正常学习 20s */
         USART1_SendString("\r\n[BASELINE] Learning 20s baseline...\r\n");
+#if USE_OLED
+        AT_SetProgressCallback(BootLearnProgress);
+#endif
         AT_LearnBaseline();
 
         /* 学习完存 FLASH */
@@ -520,9 +536,8 @@ int main(void)
         bl->light_baseline, bl->temp_baseline, bl->humi_baseline, g_mode);
 
 #if USE_OLED
-    OLED_Clear();
-    OLED_ShowString(0, 0, "Baseline Done!");
-    OLED_ShowString(0, 2, "Entering main loop...");
+    OLED_ShowBootProgress(100, "Ready!");
+    delay_ms(800);
 #endif
 
     /* ========== 启动独立看门狗（基线学习完成后再启动，避免 20s 阻塞超时） ========== */
