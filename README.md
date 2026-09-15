@@ -193,7 +193,7 @@ mosquitto_sub -h 192.168.137.1 -p 1883 -t 'home/#' -v
 | v0.6.1 | MQTT 下行控制 + 防拆检测（滑动窗口）+ OLED 主界面重构 + Web 前端 | `0dd3314` `fca83f4` |
 | v0.6.2 | MQTT retain 双向状态同步（灯状态 + 模式状态）；物理按键切模式同步上报 broker；修复"模式命令污染灯状态 topic"bug | `e603dc3` |
 
-ML 指标（`v1_train/training_report.txt`，485 样本 / 388 训练 / 97 测试）：Accuracy 0.938、Recall 1.000、F1 0.900。该报告首行写的结构 `10→16→1` 与部署头文件实际数组 `10→16→8→1` 不一致，以 `ml_inference.h` 为准。
+ML 指标（历史 TF 管线报告，485 样本 / 388 训练 / 97 测试）：Accuracy 0.938、Recall 1.000、F1 0.900。TF 管线（`train.py` + STM32Cube.AI 路线）已删除——它与 sklearn 管线写同一个 `scaler_params.h` 但符号不兼容；现行唯一管线为 `v1_train/train_sklearn.py`（结构 10→16→8→1，与部署的 `ml_inference.h` 一致），最新指标以重新运行 `train_sklearn.py` 输出的分类报告为准。
 
 上一版 943 行的 README（含逐条调试记录、AT 交互日志、排障问答）未删除，归档在 `docs/README_v0.6_legacy.md`。
 
