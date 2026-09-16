@@ -22,9 +22,14 @@ static uint32_t Config_CalcCRC(const ConfigStore_t *cfg)
 {
     /* 开 CRC 时钟（如果还没开） */
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_CRC, ENABLE);
-    /* 硬件 CRC 单元自动复位后再计算 */
+    /* 硬件 CRC 是链式移位寄存器：不复位会链到上一次计算的结果上，
+       导致保存时算的 CRC 与加载时重算的永远不一致（断电实测复现）。
+       同时注意 CalcBlockCRC 的长度参数单位是"字"而非"字节"，
+       offsetof 差值是字节数，必须 /4，否则会多读 3 倍数据
+       （保存时读到栈垃圾、加载时读到 FLASH 尾部，同样永远不匹配）。 */
+    CRC_ResetDR();
     return CRC_CalcBlockCRC((uint32_t *)((uint8_t *)cfg + CRC_RANGE_OFFSET),
-                            CRC_RANGE_LEN);
+                            CRC_RANGE_LEN / 4);
 }
 
 /**

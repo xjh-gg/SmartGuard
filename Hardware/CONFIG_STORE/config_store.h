@@ -23,8 +23,13 @@
 #include "decision_engine.h"   /* Guard_Mode_t */
 #include "adaptive_threshold.h" /* AT_Baseline_t */
 
-/* FLASH 存储地址：Sector 7，最后 128KB */
-#define CONFIG_FLASH_SECTOR     FLASH_Sector_7
+/* FLASH 存储地址：Sector 11（0x080E0000，最后 128KB，需 1MB 料号）
+   注意：SECTOR 与 ADDR 必须指向同一扇区！历史上曾写成
+   FLASH_Sector_7（0x08060000）配 0x080E0000（Sector 11），
+   导致每次保存"擦 A 写 B"，Sector 11 从未被擦除，
+   在未擦除的 FLASH 上编程使数据层层叠加损坏，
+   掉电恢复功能从未真正工作过（实测定位修复）。 */
+#define CONFIG_FLASH_SECTOR     FLASH_Sector_11
 #define CONFIG_FLASH_ADDR       0x080E0000UL
 #define CONFIG_FLASH_SECTOR_SIZE (128 * 1024)
 
