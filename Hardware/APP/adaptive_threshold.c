@@ -222,11 +222,19 @@ uint8_t AT_CheckFire(const Sensor_Data_t *data)
     /* 烟雾超过动态阈值 */
     if (data->mq2_adc < s_bl.mq2_fire_threshold) return 0;
 
-    /* 温度也明显高于 baseline（比 ewma 高 2*sigma，或绝对值 > 40°C） */
-    if (data->temperature < s_bl.temp_ewma + 2.0f * s_bl.temp_sigma &&
-        data->temperature < 40.0f)
+    /* 温度也明显高于 baseline（比 ewma 高 2*sigma，或绝对值 > 40°C）。
+       sigma 下限保护：学习期温度恒定时 sigma=0，门槛退化为
+       T >= ewma（刀刃条件，任何不小于基线的温度都算"异常"），
+       叠加 MQ-2 预热漂移会造成持续火灾误报（断电实测复现）。
+       故 margin 至少 1.5°C——真实火灾温升远超此值，不受影响。 */
     {
-        return 0;
+        float temp_margin = 2.0f * s_bl.temp_sigma;
+        if (temp_margin < 1.5f) temp_margin = 1.5f;
+        if (data->temperature < s_bl.temp_ewma + temp_margin &&
+            data->temperature < 40.0f)
+        {
+            return 0;
+        }
     }
 
     return 1;
