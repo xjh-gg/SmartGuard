@@ -17,6 +17,7 @@
 #include "esp32_cam.h"
 #include "usart.h"
 #include "delay.h"
+#include "iwdg.h"
 #include <string.h>
 
 #if USE_ESP32_CAM
@@ -41,6 +42,10 @@ static uint8_t ReadLine(char *buf, uint16_t buf_len, uint32_t timeout_ms)
         }
         else
         {
+            /* 轮询间隙喂狗：TriggerCapture 的等待最长 3000ms > IWDG 2s，
+               不喂狗会在 CAM 慢响应时误复位。timeout_ms 是硬上界，
+               CAM 无响应仍按时超时退出，不会因喂狗变成永不复位。 */
+            IWDG_Feed();
             delay_ms(1);
             elapsed++;
         }
