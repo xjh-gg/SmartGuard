@@ -446,6 +446,15 @@ uint8_t ESP8266_ConnectTCP(char *ip, uint16_t port)
     return ok;
 }
 
+/* TCP 失败统一登记：清会话标志（不许假装在线）+ 累计失败计数（供健康检查）。
+   此前 SendTCP 各失败路径静默 return 0，s_mqtt_ok 恒 1、s_send_fail_count
+   只在 MQTT 模式永不被调用的 SendUDP 里递增，导致 TCP 半死永远无恢复。 */
+static void TCP_NoteFail(void)
+{
+    s_mqtt_ok = 0;
+    if (s_send_fail_count < 250) s_send_fail_count++;
+}
+
 /**
   * @brief  发送 TCP 数据（带 link 自动重连）
   */
@@ -464,24 +473,19 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
 
     if (!ESP8266_SendAT(cmd, ">", 3000))
     {
-        /* 读一下 ESP8266 的完整错误响应，判断是不是 link 断了 */
+        /* 等不到 ">" 即判定链路异常，无条件尝试一次 TCP 重连+重发。
+           原实现靠 err_buf 匹配 "link is not valid"/"ERROR" 决定是否重连，
+           但 SendAT 在等 ">" 的 3s 窗口内已把模块响应吞进自己的 rx_buf
+           （超时返回时随栈帧丢弃），这里再读环形缓冲常见时序下恒为空，
+           按内容匹配的断链检测实际不可达，近乎死代码。 */
         uint8_t  err_buf[64] = {0};
         uint16_t err_idx = 0;
         while (USART3_GetByte(&ch) && err_idx < sizeof(err_buf) - 1)
             err_buf[err_idx++] = ch;
         err_buf[err_idx] = 0;
 
-        if (strstr((char *)err_buf, "link is not valid") ||
-            strstr((char *)err_buf, "ERROR"))
-        {
-            U1_PRINTF("[ESP8266] TCP link down, auto reconnecting...\r\n");
-            need_reconnect = 1;
-        }
-        else
-        {
-            U1_PRINTF("[ESP8266] no > prompt (got: %.48s)\r\n", err_buf);
-            return 0;
-        }
+        U1_PRINTF("[ESP8266] no > prompt (got: %.48s), try TCP reconnect...\r\n", err_buf);
+        need_reconnect = 1;
     }
 
     if (need_reconnect)
@@ -490,6 +494,7 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
         if (!ESP8266_ConnectTCP(MQTT_SERVER, MQTT_PORT))
         {
             U1_PRINTF("[ESP8266] TCP reconnect FAIL\r\n");
+            TCP_NoteFail();
             return 0;
         }
         U1_PRINTF("[ESP8266] TCP reconnected, resending...\r\n");
@@ -500,6 +505,7 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
         if (!ESP8266_SendAT(cmd, ">", 3000))
         {
             U1_PRINTF("[ESP8266] still no > after reconnect\r\n");
+            TCP_NoteFail();
             return 0;
         }
     }
@@ -528,17 +534,20 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
                 }
             }
             if (strstr((char *)ok_buf, "SEND OK")) {
+                s_send_fail_count = 0;   /* 发送成功，清连续失败计数 */
                 return 1;
             }
             if (strstr((char *)ok_buf, "ERROR") ||
                 strstr((char *)ok_buf, "SEND FAIL")) {
                 U1_PRINTF("[ESP8266] CIPSEND rejected: %s\r\n", ok_buf);
+                TCP_NoteFail();
                 return 0;
             }
             IWDG_Feed();
             delay_ms(1);
         }
         U1_PRINTF("[ESP8266] no SEND OK, got: %s\r\n", ok_buf);
+        TCP_NoteFail();
         return 0;
     }
 }
@@ -685,7 +694,19 @@ uint8_t ESP8266_MQTTSubscribe(void)
   */
 static uint8_t MQTT_EnsureSession(void)
 {
+    /* 重连退避：broker 不可用时遥测(10s)/心跳(30s)每次 publish 都会走到这里。
+       无退避时每个周期都做一次完整握手（CIPSTART 10s 超时主导，最坏 ~15s），
+       协作式调度器被反复长阻塞，决策/显示/采样全部挨饿。
+       限制完整重连最多每 60s 一次，期间快速失败；首次调用必放行。 */
+    #define MQTT_RECONNECT_BACKOFF_MS  60000U
+    static uint32_t s_last_attempt = 0;
+
     if (s_mqtt_ok) return 1;   /* 会话还活着，直接用 */
+
+    if (s_last_attempt != 0 &&
+        (g_tick - s_last_attempt) < MQTT_RECONNECT_BACKOFF_MS)
+        return 0;
+    s_last_attempt = g_tick;
 
     U1_PRINTF("[MQTT] session lost, full reconnect...\r\n");
     if (!ESP8266_MQTTConnect())
@@ -699,6 +720,7 @@ static uint8_t MQTT_EnsureSession(void)
         return 0;
     }
     s_mqtt_ok = 1;
+    s_send_fail_count = 0;   /* 会话恢复，清连续失败计数 */
     U1_PRINTF("[MQTT] session restored OK\r\n");
     MQTT_ReportLightStatus();    /* 会话就绪后立刻主动上报灯状态（broker retain） */
     MQTT_ReportModeStatus();       /* 会话就绪后立刻主动上报模式状态（broker retain） */
@@ -1320,8 +1342,14 @@ void ESP8266_SendData(const char *topic, const char *payload)
   */
 uint8_t ESP8266_CheckHealth(void)
 {
-    /* 1. 轻量探测：发 AT，1s 内无响应认为模块挂死 */
-    if (!ESP8266_SendAT("AT\r\n", "OK", 1000))
+    /* 1. 轻量探测：发 AT，1s 内无响应认为模块挂死。
+       探测加一次重试：迟到的 +IPD 下行帧会与探测撞车挤掉 OK，
+       单次探测失败就 Reset+完整重连（20~70s 调度冻结）属于误伤（实测复现）。 */
+    uint8_t probe_ok = 0;
+    for (uint8_t i = 0; i < 2 && !probe_ok; i++)
+        probe_ok = ESP8266_SendAT("AT\r\n", "OK", 1000);
+
+    if (!probe_ok)
     {
         U1_PRINTF("[ESP8266] no response, resetting...\r\n");
         ESP8266_Reset();
