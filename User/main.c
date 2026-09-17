@@ -638,6 +638,8 @@ int main(void)
 
     /* 检测 ESP8266 是否连通外网 */
 #if USE_ESP8266
+    if (ESP8266_IsWiFiOk())
+    {
     ESP8266_CheckInternet();
 
     /* NTP/UDP 时间同步（阿里云 NTP 服务器） */
@@ -675,6 +677,14 @@ int main(void)
             MQTT_ReportModeStatus();    /* 重连成功立刻上报模式状态（broker retain） */
         }
     #endif
+    }
+    else
+    {
+        /* WiFi 未连上时跳过外网检测/NTP/MQTT 握手（各阶段 AT 超时串行叠加，
+           最坏浪费 ~40-60s 启动时间）。运行期由 CheckHealth/EnsureSession
+           负责恢复（P2 断网启动优化）。 */
+        USART1_SendString("[NET] WiFi offline, skip internet/NTP/MQTT boot steps\r\n");
+    }
 #endif
 
     /* 同步初始模式到决策引擎 */
