@@ -1269,6 +1269,7 @@ restore_udp:
     ESP8266_SendAT("AT+CIPCLOSE\r\n", NULL, 0);
     delay_ms(300);
 
+#if !USE_MQTT
     /* 恢复 UDP 连接到电脑 */
     U1_PRINTF("[NTP] Restoring UDP to PC...\r\n");
     if (!ESP8266_ConnectUDP(ESP8266_UDP_SERVER_IP, ESP8266_UDP_SERVER_PORT)) {
@@ -1276,6 +1277,11 @@ restore_udp:
         delay_ms(500);
         ESP8266_ConnectUDP(ESP8266_UDP_SERVER_IP, ESP8266_UDP_SERVER_PORT);
     }
+#else
+    /* MQTT 模式下没有 UDP 数据通道：这里的恢复（CIPMUX 2s + CIPSTART 5s +
+       失败重试 ~7s）纯属浪费，且紧接着 main 会 CIPCLOSE 重建 MQTT TCP，
+       跳过可省 ~7-14s 启动时间（P2 断网启动优化）。 */
+#endif
 
     return (dt->Year > 0 || dt->Month > 0) ? 1 : 0;
 }
