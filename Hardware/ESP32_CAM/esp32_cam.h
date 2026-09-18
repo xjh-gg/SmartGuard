@@ -3,11 +3,14 @@
   * @file    esp32_cam.h
   * @brief   ESP32-CAM 联动模块头文件
   *
-  * 硬件连接（STM32F407ZE ↔ ESP32-CAM）：
-  *   STM32 USART2_TX (PA2) ──→ ESP32-CAM U0R (GPIO3)
-  *   STM32 USART2_RX (PA3) ◄── ESP32-CAM U0T (GPIO1)
-  *   STM32 GND            ──→ ESP32-CAM GND
-  *   STM32 5V             ──→ ESP32-CAM 5V（注意供电要足！≥500mA）
+ * 硬件连接（STM32F407ZE ↔ ESP32-CAM）：
+ *   STM32 USART2_TX (PA2) ──→ ESP32-CAM U0R (GPIO3)
+ *   STM32 USART2_RX (PA3) ◄── ESP32-CAM U0T (GPIO1)
+ *   STM32 GND            ──→ ESP32-CAM GND（必须是真 GND：上排5V隔壁 或
+ *                             下排IO0与VCC之间那根！下排角落"GND"实为
+ *                             GND/R复位脚，接上CAM会被按住复位；
+ *                             VCC针是3.3V输出，也不能当地用）
+ *   STM32 5V             ──→ ESP32-CAM 5V（注意供电要足！≥500mA）
   *
   * 串口协议（115200, 8N1）：
   *   STM32 → ESP32-CAM: "CAPTURE\r\n"         // 触发拍照

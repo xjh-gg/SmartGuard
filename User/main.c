@@ -50,9 +50,7 @@
 #include <string.h>      /* strcmp for MQTT_OnCmdReceived */
 #endif
 
-#if USE_ESP32_CAM
-#include "esp32_cam.h"
-#endif
+#include "esp32_cam.h"  /* 必须在 #if USE_ESP32_CAM 之前包含：宏定义在此头文件中 */
 
 #if USE_MPU6050
 #include "mpu6050.h"
