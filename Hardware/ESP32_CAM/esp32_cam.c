@@ -71,6 +71,7 @@ uint8_t ESP32CAM_Init(void)
     char rx_buf[64];
     for (int retry = 0; retry < 5; retry++)
     {
+        USART2_FlushRx();
         USART2_SendString("STATUS\r\n");
         if (ReadLine(rx_buf, sizeof(rx_buf), 1000))
         {
