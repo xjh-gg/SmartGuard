@@ -31,8 +31,14 @@
 #include "esp32-hal-cpu.h"
 
 /* ============ WiFi 配置（和 ESP8266 连同一个路由器） ============ */
-const char *WIFI_SSID = "你的WiFi名称";
-const char *WIFI_PASS = "<redacted-password>";
+const char *WIFI_SSID = "LAPTOP-KNLKBLMS 0997";
+const char *WIFI_PASS = "bgqn4371";
+
+/* 固定 IP（热点网段 192.168.137.x，热点不会改它） */
+IPAddress LOCAL_IP(192, 168, 137, 250);
+IPAddress GATEWAY (192, 168, 137, 1);
+IPAddress SUBNET  (255, 255, 255, 0);
+IPAddress DNS     (192, 168, 137, 1);
 
 /* ============ 摄像头配置（AI Thinker ESP32-CAM 固定引脚） ============ */
 #define PWDN_GPIO_NUM     32
@@ -106,14 +112,14 @@ void handleSnapshot()
 {
     captureSnapshot();
     if (g_last_snapshot) {
-        WiFiClient *client = server.client();
+        NetworkClient client = server.client();
         if (!client) return;
-        client->write("HTTP/1.1 200 OK\r\n");
-        client->write("Content-Type: image/jpeg\r\n");
-        client->write("Content-Length: ");
-        client->write(String(g_last_snapshot->len).c_str());
-        client->write("\r\nConnection: close\r\n\r\n");
-        client->write((const char *)g_last_snapshot->buf, g_last_snapshot->len);
+        client.write("HTTP/1.1 200 OK\r\n");
+        client.write("Content-Type: image/jpeg\r\n");
+        client.write("Content-Length: ");
+        client.write(String(g_last_snapshot->len).c_str());
+        client.write("\r\nConnection: close\r\n\r\n");
+        client.write((const char *)g_last_snapshot->buf, g_last_snapshot->len);
     } else {
         server.send(500, "text/plain", "NO_DATA");
     }
@@ -123,14 +129,14 @@ void handleSnapshot()
 void handleShotJpg()
 {
     if (g_last_snapshot) {
-        WiFiClient *client = server.client();
+        NetworkClient client = server.client();
         if (!client) return;
-        client->write("HTTP/1.1 200 OK\r\n");
-        client->write("Content-Type: image/jpeg\r\n");
-        client->write("Content-Length: ");
-        client->write(String(g_last_snapshot->len).c_str());
-        client->write("\r\nConnection: close\r\n\r\n");
-        client->write((const char *)g_last_snapshot->buf, g_last_snapshot->len);
+        client.write("HTTP/1.1 200 OK\r\n");
+        client.write("Content-Type: image/jpeg\r\n");
+        client.write("Content-Length: ");
+        client.write(String(g_last_snapshot->len).c_str());
+        client.write("\r\nConnection: close\r\n\r\n");
+        client.write((const char *)g_last_snapshot->buf, g_last_snapshot->len);
     } else {
         server.send(503, "text/plain", "NO_SNAPSHOT_YET");
     }
@@ -139,24 +145,24 @@ void handleShotJpg()
 /* MJPEG 实时流 */
 void handleStream()
 {
-    WiFiClient *client = server.client();
-    if (!client || !client->connected()) return;
+    NetworkClient client = server.client();
+    if (!client || !client.connected()) return;
 
-    client->write("HTTP/1.1 200 OK\r\n");
-    client->write("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n");
-    client->write("Cache-Control: no-cache\r\nConnection: close\r\n\r\n");
+    client.write("HTTP/1.1 200 OK\r\n");
+    client.write("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n");
+    client.write("Cache-Control: no-cache\r\nConnection: close\r\n\r\n");
 
     unsigned long start = millis();
-    while (client->connected() && (millis() - start < 30000)) {  /* 最长 30s */
+    while (client.connected() && (millis() - start < 30000)) {  /* 最长 30s */
         camera_fb_t *fb = esp_camera_fb_get();
         if (!fb) break;
 
-        client->write("--frame\r\n");
-        client->write("Content-Type: image/jpeg\r\n");
-        client->write("Content-Length: ");
-        client->write(String(fb->len).c_str());
-        client->write("\r\n\r\n");
-        client->write((const char *)fb->buf, fb->len);
+        client.write("--frame\r\n");
+        client.write("Content-Type: image/jpeg\r\n");
+        client.write("Content-Length: ");
+        client.write(String(fb->len).c_str());
+        client.write("\r\n\r\n");
+        client.write((const char *)fb->buf, fb->len);
         esp_camera_fb_return(fb);
         delay(50);
     }
@@ -252,8 +258,11 @@ void setup()
     }
     Serial.println("[CAM] OK");
 
-    /* ---- 2. WiFi 连接 ---- */
+    /* ---- 2. WiFi 连接（固定 IP，热点不分配也变不了） ---- */
     WiFi.mode(WIFI_STA);
+    WiFi.setTxPower(WIFI_POWER_8_5dBm);  /* 降发射功率:削减峰值电流,杜邦线供电也不 brownout */
+    Serial.println("[PWR] TX=8.5dBm");   /* 版本标记:看到这行说明新固件生效 */
+    WiFi.config(LOCAL_IP, GATEWAY, SUBNET, DNS);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
 
     Serial.printf("[WiFi] connecting to '%s'", WIFI_SSID);
