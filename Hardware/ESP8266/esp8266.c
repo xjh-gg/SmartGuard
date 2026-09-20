@@ -62,6 +62,27 @@ uint8_t ESP8266_Init(void)
 
     if (!at_ok)
     {
+        /* 模块上电启动可能比 STM32 慢（ESP8266 自身 boot 需 ~1-2s）：
+           等 2s 补一轮探测再宣判，避免开机即进入离线模式（实测复现）。 */
+        U1_PRINTF("[ESP] no response, module may still be booting, retry in 2s...\r\n");
+        delay_ms(2000);
+        for (baud = 115200; baud >= 9600; baud = (baud == 115200) ? 9600 : 0)
+        {
+            if (baud == 0) break;
+            USART3_Init(baud);
+            delay_ms(200);
+            USART3_FlushRx();
+            if (ESP8266_SendAT("AT\r\n", "OK", 3000))
+            {
+                at_ok = 1;
+                U1_PRINTF("[ESP] AT OK at %lu baud (retry)\r\n", baud);
+                break;
+            }
+        }
+    }
+
+    if (!at_ok)
+    {
         U1_PRINTF("[ESP] AT no response at 115200 and 9600, hardware issue!\r\n");
         U1_PRINTF("[ESP] check: 3.3V power? TX->RXD? RX->TXD? GND connected?\r\n");
         s_wifi_ok = 0;
