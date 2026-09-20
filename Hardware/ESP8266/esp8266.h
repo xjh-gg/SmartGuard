@@ -73,6 +73,7 @@ uint8_t ESP8266_IsMQTTOk(void);       /* 返回 MQTT 会话状态，供 OLED 状
 #define MQTT_TOPIC_STATUS     "home/light/status"     /* 灯状态 on/off */
 #define MQTT_TOPIC_SENSOR     "home/sensor/status"    /* 遥测 + 告警 */
 #define MQTT_TOPIC_MODE_STATUS "home/mode/status"       /* 模式状态 HOME/AWAY/SLEEP，retain */
+#define MQTT_TOPIC_CAM_SHOT   "home/cam/shot"           /* 入侵拍照图片 URL，retain */
 #define MQTT_KEEPALIVE_SEC    60
 
 /* ---------- 原巴法云配置（已下线，保留供参考） ----------

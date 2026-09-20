@@ -66,6 +66,10 @@ WiFiClient client = WiFiClient();
 camera_fb_t *g_last_snapshot = NULL;
 bool g_snapshot_busy = false;
 
+/* 已连接 IP 的缓存：拍照 URL 用它而不是实时 WiFi.localIP()，
+   避免 WiFi 掉线时给 STM32 回 0.0.0.0 */
+String g_ip_str = "";
+
 /* ================================================================
  *  拍照并保存到全局快照
  *  非阻塞调用，busy 时返回 false
@@ -97,14 +101,14 @@ bool captureSnapshot()
 /* 首页 */
 void handleIndex()
 {
-    String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width'>"
+    String html = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width'>"
                   "<title>SmartGuard ESP32-CAM</title></head><body style='background:#1a1a1a;color:#fff'>"
                   "<h2>SmartGuard ESP32-CAM</h2>"
                   "<img src='/stream' style='max-width:100%;border:1px solid #444'>"
                   "<p>IP: " + WiFi.localIP().toString() + "</p>"
                   "<p><a href='/shot.jpg' style='color:#0af'>查看最新快照</a></p>"
                   "</body></html>";
-    server.send(200, "text/html", html);
+    server.send(200, "text/html; charset=utf-8", html);
 }
 
 /* 手动快照 */
@@ -193,7 +197,7 @@ void handleSerialCmd()
         } else if (cmd_buf == "CAPTURE") {
             if (captureSnapshot()) {
                 Serial.print("OK http://");
-                Serial.print(WiFi.localIP());
+                Serial.print(g_ip_str.length() ? g_ip_str : WiFi.localIP().toString());
                 Serial.println("/shot.jpg");
             } else {
                 Serial.println("BUSY");
@@ -238,14 +242,15 @@ void setup()
         .pin_vsync = VSYNC_GPIO_NUM,
         .pin_href  = HREF_GPIO_NUM,
         .pin_pclk  = PCLK_GPIO_NUM,
-        .xclk_freq_hz = 20000000,
+        .xclk_freq_hz = 12000000,   /* 实测对标官方固件:12MHz 流畅(15仍卡);更低主频还降功耗发热 */
         .ledc_timer   = LEDC_TIMER_0,
         .ledc_channel = LEDC_CHANNEL_0,
         .pixel_format = PIXFORMAT_JPEG,
         .frame_size   = FRAMESIZE_QVGA,    /* 320x240，够清楚又省带宽 */
         .jpeg_quality = 12,                 /* 1-63, 数值越高质量越好 */
         .fb_count     = 2,
-        .fb_location  = CAMERA_FB_IN_PSRAM /* 有 PSRAM 就用 PSRAM */
+        .fb_location  = CAMERA_FB_IN_PSRAM, /* 有 PSRAM 就用 PSRAM */
+        .grab_mode    = CAMERA_GRAB_LATEST  /* 总取最新帧,不积压,官方流式配置 */
     };
 
     esp_err_t err = esp_camera_init(&config);
@@ -260,8 +265,9 @@ void setup()
 
     /* ---- 2. WiFi 连接（固定 IP，热点不分配也变不了） ---- */
     WiFi.mode(WIFI_STA);
-    WiFi.setTxPower(WIFI_POWER_8_5dBm);  /* 降发射功率:削减峰值电流,杜邦线供电也不 brownout */
-    Serial.println("[PWR] TX=8.5dBm");   /* 版本标记:看到这行说明新固件生效 */
+    WiFi.setSleep(false);                /* 关WiFi省电:消除beacon跳过造成的数百ms延迟抖动,流媒体关键 */
+    WiFi.setTxPower(WIFI_POWER_19_5dBm); /* 满功率:独立供电后可承受,视频流更流畅(供电不足时改回 8_5dBm) */
+    Serial.println("[PWR] TX=19.5dBm");  /* 版本标记:看到这行说明新固件生效 */
     WiFi.config(LOCAL_IP, GATEWAY, SUBNET, DNS);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
 
@@ -274,7 +280,8 @@ void setup()
     }
 
     if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("\r\n[WiFi] OK, IP=%s\r\n", WiFi.localIP().toString().c_str());
+        g_ip_str = WiFi.localIP().toString();
+        Serial.printf("\r\n[WiFi] OK, IP=%s\r\n", g_ip_str.c_str());
     } else {
         Serial.println("\r\n[WiFi] FAIL! Using fallback AP...");
         WiFi.mode(WIFI_AP);
@@ -297,6 +304,24 @@ void setup()
     Serial.println("READY");  /* 告诉 STM32 我们 ready 了 */
 }
 
+/* WiFi 看门狗：断线自动重连，重连后刷新 IP 缓存 */
+static uint32_t g_wifi_check_ms = 0;
+void wifiWatchdog()
+{
+    uint32_t now = millis();
+    if (now - g_wifi_check_ms < 10000) return;   /* 每 10s 查一次 */
+    g_wifi_check_ms = now;
+
+    if (WiFi.getMode() != WIFI_STA) return;      /* AP fallback 模式不干预 */
+    if (WiFi.status() == WL_CONNECTED) {
+        g_ip_str = WiFi.localIP().toString();
+        return;
+    }
+    Serial.println("[WiFi] lost, reconnecting...");
+    WiFi.disconnect();
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+}
+
 void loop()
 {
     /* HTTP 请求处理 */
@@ -304,4 +329,7 @@ void loop()
 
     /* 串口命令（STM32 发过来的） */
     handleSerialCmd();
+
+    /* WiFi 断线重连 */
+    wifiWatchdog();
 }
