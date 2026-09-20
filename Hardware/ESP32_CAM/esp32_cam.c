@@ -119,6 +119,9 @@ ESP32CAM_Status_t ESP32CAM_TriggerCapture(char *url_buf, uint16_t buf_len)
     char rx_buf[128];
     if (!ReadLine(rx_buf, sizeof(rx_buf), 3000))
     {
+        /* 超时说明 CAM 大概率已死机/掉线：清零在线标志，
+           让下次走 1s 快速重探测分支，而不是每次 3s 满超时（P3-#7） */
+        cam_online = 0;
         return CAM_TIMEOUT;
     }
 
