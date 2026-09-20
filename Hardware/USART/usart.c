@@ -339,8 +339,11 @@ void USART2_RxHandler(void)
 /* USART3 驱动实现（接 ESP8266 WiFi 模块）                                     */
 /* ========================================================================== */
 
-/* ========== USART3 环形缓冲区 ========== */
-static volatile uint8_t  usart3_rx_buf[RX_BUF_SIZE];
+/* ========== USART3 环形缓冲区 ==========
+   单独放大到 512B：128B 在 115200bps 下只够 ~11ms，OLED 整屏重绘(~50ms)或
+   MQTT 重连冻结期间，ESP8266 的 +IPD 下行会在 ISR 里静默丢弃（P3-#6） */
+#define USART3_RX_BUF_SIZE  512
+static volatile uint8_t  usart3_rx_buf[USART3_RX_BUF_SIZE];
 static volatile uint16_t usart3_rx_head = 0;
 static volatile uint16_t usart3_rx_tail = 0;
 
@@ -415,7 +418,7 @@ uint8_t USART3_GetByte(uint8_t *data)
     if (usart3_rx_head != usart3_rx_tail)
     {
         *data = usart3_rx_buf[usart3_rx_tail];
-        usart3_rx_tail = (usart3_rx_tail + 1) % RX_BUF_SIZE;
+        usart3_rx_tail = (usart3_rx_tail + 1) % USART3_RX_BUF_SIZE;
         return 1;
     }
     return 0;
@@ -423,7 +426,7 @@ uint8_t USART3_GetByte(uint8_t *data)
 
 uint16_t USART3_GetRxCount(void)
 {
-    return (usart3_rx_head - usart3_rx_tail + RX_BUF_SIZE) % RX_BUF_SIZE;
+    return (usart3_rx_head - usart3_rx_tail + USART3_RX_BUF_SIZE) % USART3_RX_BUF_SIZE;
 }
 
 void USART3_FlushRx(void)
@@ -439,7 +442,7 @@ void USART3_RxHandler(void)
     {
         ch = (uint8_t)USART_ReceiveData(USART3);
 
-        uint16_t next = (usart3_rx_head + 1) % RX_BUF_SIZE;
+        uint16_t next = (usart3_rx_head + 1) % USART3_RX_BUF_SIZE;
         if (next != usart3_rx_tail)
         {
             usart3_rx_buf[usart3_rx_head] = ch;
