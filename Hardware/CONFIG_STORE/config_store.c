@@ -9,6 +9,7 @@
   ******************************************************************************
   */
 #include "config_store.h"
+#include "iwdg.h"      /* 擦除前喂狗（128KB 擦除期间 CPU 取指停顿，无法喂狗） */
 #include <stddef.h>   /* offsetof 宏 */
 
 /* ====== CRC 计算范围偏移：magic 到 reserved2，不含 crc32（由 offsetof 自动计算） ====== */
@@ -105,7 +106,10 @@ uint8_t Config_Save(const AT_Baseline_t *bl, Guard_Mode_t mode)
     FLASH_ClearFlag(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |
                     FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
 
-    /* 3. 擦除 Sector 7（最后一个 128KB 扇区） */
+    /* 3. 擦除 Sector 7（最后一个 128KB 扇区）。
+       单 Bank：擦除期间 CPU 取指停顿（典型 ~1s，最大 ~2s），无法喂狗，
+       擦前先喂一次把 IWDG(2s) 窗口拉满。长期建议迁到 16KB 小扇区（P3 备注） */
+    IWDG_Feed();
     status = FLASH_EraseSector(CONFIG_FLASH_SECTOR, VoltageRange_3);
     if (status != FLASH_COMPLETE) {
         FLASH_Lock();

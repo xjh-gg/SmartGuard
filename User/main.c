@@ -397,6 +397,11 @@ static void SampleAllSensors(void)
 
 /* ============ 按键处理 ============ */
 #if USE_BOARD_KEY
+/* 配置落盘脏标志：按键只置位，由 task_display(1s) 统一执行 Config_Save。
+   原因：Config_Save 含 128KB 扇区擦除（典型 ~1s，CPU 取指停顿、期间无法喂狗），
+   直接在按键路径擦除有顶爆 IWDG(2s) 的风险；延迟合并且能合并连按（P3-#2） */
+static volatile uint8_t s_config_dirty = 0;
+
 static void HandleBoardKey(void)
 {
     static uint8_t s_last_key = 0;
@@ -407,9 +412,9 @@ static void HandleBoardKey(void)
     if (key == 0) return;            /* 松开，不触发 */
 
     switch (key) {
-        case S1: g_mode = MODE_HOME;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE HOME\r\n");  MQTT_ReportModeStatus();  break;
-        case S2: g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE AWAY\r\n");  MQTT_ReportModeStatus();  break;
-        case S3: g_mode = MODE_SLEEP; DecisionEngine_SetMode(g_mode); Config_Save(AT_GetBaseline(), g_mode); USART1_SendString("-> MODE SLEEP\r\n"); MQTT_ReportModeStatus(); break;
+        case S1: g_mode = MODE_HOME;  DecisionEngine_SetMode(g_mode); s_config_dirty = 1; USART1_SendString("-> MODE HOME\r\n");  MQTT_ReportModeStatus();  break;
+        case S2: g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode); s_config_dirty = 1; USART1_SendString("-> MODE AWAY\r\n");  MQTT_ReportModeStatus();  break;
+        case S3: g_mode = MODE_SLEEP; DecisionEngine_SetMode(g_mode); s_config_dirty = 1; USART1_SendString("-> MODE SLEEP\r\n"); MQTT_ReportModeStatus(); break;
         case S4:
             g_manual_alert = ALERT_INTRUSION;
             g_last_alarm_tick = 0;
@@ -543,6 +548,12 @@ static void task_decision(void)
 /* 每 1s：RTC 秒刷新 + OLED 刷新（含 WiFi/MQTT 状态采样） */
 static void task_display(void)
 {
+    /* 延迟落盘：按键置脏后在此统一擦写（见 HandleBoardKey 上方注释） */
+    if (s_config_dirty) {
+        s_config_dirty = 0;
+        Config_Save(AT_GetBaseline(), g_mode);
+    }
+
 #if USE_RTC
     SG_RTC_FormatTime(s_time_buf, sizeof(s_time_buf));
     USART1_Printf("[RTC] %s\r\n", s_time_buf);
