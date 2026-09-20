@@ -589,10 +589,50 @@ static void task_ping(void)
 #endif
 
 #if USE_ESP8266
+static uint8_t s_ntp_done = 0;   /* NTP 是否已成功同步过（开机或恢复后一次即可） */
+
+/* NTP 对时 + 对时后 MQTT 重连（GetNTPTime 内部会 CIPCLOSE 旧 socket）。
+   开机与 WiFi 恢复后共用；成功置 s_ntp_done。 */
+static void SyncNtpOnce(void)
+{
+    USART1_SendString("[RTC] Calling NTP...\r\n");
+    {
+        RTC_DateTime_t ntp_dt;
+        if (ESP8266_GetNTPTime(&ntp_dt)) {
+            SG_RTC_SetDateTime(ntp_dt.Year, ntp_dt.Month, ntp_dt.Date,
+                               ntp_dt.Hours, ntp_dt.Minutes, ntp_dt.Seconds);
+            USART1_Printf("[RTC] NTP synced: 20%02d-%02d-%02d %02d:%02d:%02d\r\n",
+                          ntp_dt.Year, ntp_dt.Month, ntp_dt.Date,
+                          ntp_dt.Hours, ntp_dt.Minutes, ntp_dt.Seconds);
+            s_ntp_done = 1;
+        } else {
+            USART1_SendString("[RTC] NTP sync failed, use compile time\r\n");
+        }
+    }
+
+#if USE_MQTT
+    /* GetNTPTime 内部 CIPCLOSE 后 MQTT TCP 必须重建 */
+    if (!ESP8266_MQTTConnect())
+        USART1_Printf("[MQTT] Reconnect after NTP failed\r\n");
+    else if (!ESP8266_MQTTSubscribe())
+        USART1_Printf("[MQTT] Resubscribe after NTP failed\r\n");
+    else {
+        MQTT_ReportLightStatus();
+        MQTT_ReportModeStatus();
+    }
+#endif
+}
+
 /* 每 5 分钟：ESP8266 网络健康检查 */
 static void task_health(void)
 {
     ESP8266_CheckHealth();
+
+    /* 开机时 ESP8266 未就绪会跳过 NTP（RTC 停在编译时间）；
+       WiFi 恢复后在此补一次对时（P1 冷启动容错）。 */
+    if (!s_ntp_done && ESP8266_IsWiFiOk()) {
+        SyncNtpOnce();
+    }
 }
 #endif
 
@@ -643,40 +683,7 @@ int main(void)
     ESP8266_CheckInternet();
 
     /* NTP/UDP 时间同步（阿里云 NTP 服务器） */
-    USART1_SendString("[RTC] Calling NTP...\r\n");
-    {
-        RTC_DateTime_t ntp_dt;
-        if (ESP8266_GetNTPTime(&ntp_dt)) {
-            SG_RTC_SetDateTime(ntp_dt.Year, ntp_dt.Month, ntp_dt.Date,
-                               ntp_dt.Hours, ntp_dt.Minutes, ntp_dt.Seconds);
-            USART1_Printf("[RTC] NTP synced: 20%02d-%02d-%02d %02d:%02d:%02d\r\n",
-                          ntp_dt.Year, ntp_dt.Month, ntp_dt.Date,
-                          ntp_dt.Hours, ntp_dt.Minutes, ntp_dt.Seconds);
-            {
-                RTC_DateTime_t verify;
-                SG_RTC_GetTime(&verify);
-                USART1_Printf("[RTC] read-back: 20%02d-%02d-%02d %02d:%02d:%02d\r\n",
-                              verify.Year, verify.Month, verify.Date,
-                              verify.Hours, verify.Minutes, verify.Seconds);
-            }
-        } else {
-            USART1_SendString("[RTC] NTP sync failed, use compile time\r\n");
-        }
-    }
-    USART1_SendString("[RTC] NTP call returned\r\n");
-
-    #if USE_MQTT
-        /* GetNTPTime internally does AT+CIPCLOSE and reopens UDP.
-           Reconnect MQTT TCP link, otherwise data goes nowhere. */
-        if (!ESP8266_MQTTConnect())
-            USART1_Printf("[MQTT] Reconnect after NTP failed\r\n");
-        else if (!ESP8266_MQTTSubscribe())
-            USART1_Printf("[MQTT] Resubscribe after NTP failed\r\n");
-        else {
-            MQTT_ReportLightStatus();   /* 重连成功立刻上报灯状态（broker retain） */
-            MQTT_ReportModeStatus();    /* 重连成功立刻上报模式状态（broker retain） */
-        }
-    #endif
+    SyncNtpOnce();
     }
     else
     {
