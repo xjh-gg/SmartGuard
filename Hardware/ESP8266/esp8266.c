@@ -361,8 +361,31 @@ uint8_t ESP8266_SendUDP(uint8_t *data, uint16_t len)
         USART3_SendByte(data[i]);
     }
 
-    s_send_fail_count = 0;
-    return 1;
+    /* 等 SEND OK：发完字节不等于模块接受/发出（与 SendTCP 对齐，P3-#8）。
+       原实现发完直接报成功，模块拒收时告警静默丢失 */
+    {
+        uint8_t  ch;
+        uint8_t  ok_buf[48] = {0};
+        uint16_t ok_idx = 0;
+        uint16_t ok_timeout = 1500;
+        while (ok_timeout--) {
+            while (USART3_GetByte(&ch)) {
+                if (ok_idx < sizeof(ok_buf) - 1) { ok_buf[ok_idx++] = ch; ok_buf[ok_idx] = '\0'; }
+            }
+            if (strstr((char *)ok_buf, "SEND OK")) {
+                s_send_fail_count = 0;
+                return 1;
+            }
+            if (strstr((char *)ok_buf, "ERROR") ||
+                strstr((char *)ok_buf, "SEND FAIL")) break;
+            IWDG_Feed();
+            delay_ms(1);
+        }
+        U1_PRINTF("[ESP8266] UDP no SEND OK, got: %s\r\n", ok_buf);
+    }
+
+    s_send_fail_count++;
+    return 0;
 }
 
 /**
@@ -524,17 +547,12 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
             TCP_NoteFail();
             return 0;
         }
-        U1_PRINTF("[ESP8266] TCP reconnected, resending...\r\n");
-
-        /* 重发 CIPSEND */
-        snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%d\r\n", len);
-        while (USART3_GetByte(&ch)) MQTT_FeedByte(ch);   /* 同首次发送：残留喂解析器而非丢弃 */
-        if (!ESP8266_SendAT(cmd, ">", 3000))
-        {
-            U1_PRINTF("[ESP8266] still no > after reconnect\r\n");
-            TCP_NoteFail();
-            return 0;
-        }
+        /* 新 socket 上没有 MQTT CONNECT 会话：裸重发 PUBLISH 报文会被
+           broker 当协议违规直接丢弃，函数却返回"成功"——告警静默丢失。
+           不装：如实返回失败；s_mqtt_ok 已清，下一次发布会走
+           EnsureSession 完成 CONNECT+SUBSCRIBE 重握手后再发（P3-#8） */
+        U1_PRINTF("[ESP8266] TCP reconnected, MQTT session lost, msg dropped honestly\r\n");
+        return 0;
     }
 
     delay_ms(100);   /* 等 > 提示稳定 */
