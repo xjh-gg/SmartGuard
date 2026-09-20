@@ -213,31 +213,43 @@ void AT_Update(uint16_t light, uint16_t mq2, float temp, float humi, float dist)
 }
 
 /**
-  * @brief  火灾判断：烟雾 > 动态阈值 且 温度明显高于 baseline
+  * @brief  火灾判断：烟雾 > 动态阈值(带迟滞) 且 温度明显高于 baseline，
+  *         连续 4 个样本成立才触发
+  * @note   MQ2 噪声带常覆盖阈值附近（实测 500~730 抖动 vs th≈617），
+  *         单样本瞬时判定导致频繁误报。迟滞带防止进出抖动，
+  *         连续确认过滤秒级噪声尖峰；真实火灾持续存在，不受影响。
   */
+#define AT_FIRE_HYST     60   /* 阈值上方迟滞带 */
+#define AT_FIRE_CONFIRM  4    /* 连续确认样本数（决策周期 500ms → 约 2s） */
+
 uint8_t AT_CheckFire(const Sensor_Data_t *data)
 {
-    if (!s_bl.is_learned) return 0;
+    static uint8_t s_fire_hits = 0;
 
-    /* 烟雾超过动态阈值 */
-    if (data->mq2_adc < s_bl.mq2_fire_threshold) return 0;
+    if (!s_bl.is_learned) { s_fire_hits = 0; return 0; }
 
     /* 温度也明显高于 baseline（比 ewma 高 2*sigma，或绝对值 > 40°C）。
        sigma 下限保护：学习期温度恒定时 sigma=0，门槛退化为
        T >= ewma（刀刃条件，任何不小于基线的温度都算"异常"），
        叠加 MQ-2 预热漂移会造成持续火灾误报（断电实测复现）。
        故 margin 至少 1.5°C——真实火灾温升远超此值，不受影响。 */
+    uint8_t hot;
     {
         float temp_margin = 2.0f * s_bl.temp_sigma;
         if (temp_margin < 1.5f) temp_margin = 1.5f;
-        if (data->temperature < s_bl.temp_ewma + temp_margin &&
-            data->temperature < 40.0f)
-        {
-            return 0;
-        }
+        hot = (data->temperature >= s_bl.temp_ewma + temp_margin ||
+               data->temperature >= 40.0f);
     }
 
-    return 1;
+    /* 烟雾计数：超 threshold+HYST 且温度成立 → 命中+1；
+       明确低于 threshold → 清零；迟滞带内保持（防抖动） */
+    if (data->mq2_adc >= (uint32_t)s_bl.mq2_fire_threshold + AT_FIRE_HYST && hot) {
+        if (s_fire_hits < AT_FIRE_CONFIRM) s_fire_hits++;
+    } else if (data->mq2_adc < s_bl.mq2_fire_threshold) {
+        s_fire_hits = 0;
+    }
+
+    return (s_fire_hits >= AT_FIRE_CONFIRM) ? 1 : 0;
 }
 
 /**
