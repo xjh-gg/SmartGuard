@@ -841,6 +841,12 @@ static uint16_t    s_ipd_len   = 0;     /* +IPD 声明的载荷长度 */
 static uint16_t    s_ipd_got   = 0;     /* 已收载荷字节数 */
 static uint8_t     s_ipd_buf[IPD_BUF_SIZE];
 
+/* 跨 +IPD 帧的半包暂存：TCP 会把一个 MQTT 包拆进两帧（broker 推 retained 时高发），
+   解析器在帧尾遇到不完整包时把残段存这里，下一帧开头先拼上再解析 */
+static uint8_t     s_carry[IPD_BUF_SIZE];
+static uint16_t    s_carry_len = 0;
+static uint8_t     s_combined[IPD_BUF_SIZE];
+
 static char        s_pending_cmd[CMD_BUF_SIZE];
 static uint8_t     s_pending_valid = 0;
 
@@ -868,10 +874,18 @@ static void MQTT_ParseFrame(const uint8_t *buf, uint16_t len)
             U1_PRINTF("[MQTT] rx: remaining length >127 unsupported, frame dropped\r\n");
             return;
         }
-        /* 卫兵：包体必须完整落在这一帧里 */
+        /* 卫兵：包体必须完整落在这一帧里。
+           不完整 = TCP 拆包：残段存入 carry，与下一帧拼接后再解析（不再丢弃） */
         if (off + 2 + rl > len) {
-            U1_PRINTF("[MQTT] rx: truncated, need %u have %u, frame dropped\r\n",
-                      (unsigned)(off + 2 + rl), (unsigned)len);
+            if (len > off && (uint16_t)(len - off) <= sizeof(s_carry)) {
+                uint16_t k;
+                for (k = 0; k < (uint16_t)(len - off); k++) s_carry[k] = buf[off + k];
+                s_carry_len = (uint16_t)(len - off);
+                U1_PRINTF("[MQTT] rx: partial pkt %uB carried to next frame\r\n",
+                          (unsigned)s_carry_len);
+            } else {
+                s_carry_len = 0;
+            }
             return;
         }
 
@@ -986,7 +1000,23 @@ static void MQTT_FeedByte(uint8_t ch)
             if (s_ipd_got < IPD_BUF_SIZE) s_ipd_buf[s_ipd_got] = ch;
             s_ipd_got++;
             if (s_ipd_got >= s_ipd_len) {
-                MQTT_ParseFrame(s_ipd_buf, s_ipd_got);
+                if (s_carry_len > 0) {
+                    /* 帧头拼上上一帧遗留的半包残段 */
+                    uint16_t total = (uint16_t)(s_carry_len + s_ipd_got);
+                    if (total <= IPD_BUF_SIZE) {
+                        uint16_t k;
+                        for (k = 0; k < s_carry_len; k++) s_combined[k] = s_carry[k];
+                        for (k = 0; k < s_ipd_got;  k++) s_combined[s_carry_len + k] = s_ipd_buf[k];
+                        s_carry_len = 0;
+                        MQTT_ParseFrame(s_combined, total);
+                    } else {
+                        U1_PRINTF("[MQTT] rx: carry+frame overflow %uB, dropped\r\n",
+                                  (unsigned)total);
+                        s_carry_len = 0;
+                    }
+                } else {
+                    MQTT_ParseFrame(s_ipd_buf, s_ipd_got);
+                }
                 s_ipd_len   = 0;
                 s_ipd_got   = 0;
                 s_ipd_state = IPD_IDLE;
