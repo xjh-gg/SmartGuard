@@ -520,6 +520,8 @@ static void task_decision(void)
 #endif
                     if (cam_st == CAM_OK) {
                         USART1_Printf("[ESP32-CAM] photo: %s\r\n", cam_url);
+                        /* 拍照成功：图片 URL 推 MQTT（retain，Web 端刷新也能看到最后一张） */
+                        ESP8266_MQTTPublish(MQTT_TOPIC_CAM_SHOT, cam_url, 1);
                     } else if (cam_st == CAM_OFFLINE) {
                         USART1_SendString("[ESP32-CAM] offline\r\n");
                     } else {
