@@ -60,7 +60,7 @@ void DecisionEngine_SetMode(Guard_Mode_t mode)
         {
             case MODE_HOME:  USART1_SendString("[MODE] HOME 在家模式 - 入侵检测关\r\n");   break;
             case MODE_AWAY:  USART1_SendString("[MODE] AWAY 离家模式 - 入侵检测开\r\n");   break;
-            case MODE_SLEEP: USART1_SendString("[MODE] SLEEP 睡眠模式 - 入侵检测开\r\n"); break;
+            case MODE_SLEEP: USART1_SendString("[MODE] SLEEP 睡眠模式 - 入侵关/防拆开/照明关\r\n"); break;
         }
         Beep_Off();
         LED_OFF(1);
@@ -87,7 +87,10 @@ static Alert_Type_t CheckIntrusion(const Sensor_Data_t *data)
 {
     Alert_Type_t raw = ALERT_NONE;
 
-    if (s_mode == MODE_HOME) return ALERT_NONE;
+    /* SLEEP 语义（v0.7.1）：睡眠=主人在家睡觉，超声波入侵关闭（起夜/翻身
+       不应误报），这是与 HOME 的核心差异——HOME 同时关防拆和照明，
+       SLEEP 保留防拆（半夜搬动设备必须告警）但关照明（睡觉不亮灯） */
+    if (s_mode == MODE_HOME || s_mode == MODE_SLEEP) return ALERT_NONE;
     if (data->distance <= 0.0f) {
         /* 无效读数也衰减 hit，防止传感器故障导致告警永久挂起 */
         if (s_intrusion_hit > 0) s_intrusion_hit--;
@@ -206,6 +209,12 @@ static Alert_Type_t CheckTamper(const Sensor_Data_t *data)
   */
 static void AutoLighting(const Sensor_Data_t *data)
 {
+    /* SLEEP 语义：睡眠模式关灯（睡觉不亮灯），不再跟随光照调节 */
+    if (s_mode == MODE_SLEEP) {
+        PWM_Home_SetDuty(0);
+        return;
+    }
+
     /* 板载光敏方向（adc.c 已核实）：光照越强 ADC 值越小、越暗值越大。
        PWM 低电平点亮、CCR 越大越亮，因此直接用 ADC 值映射占空比：
        白天 ADC 小 -> 占空比小 -> 灯暗；夜晚 ADC 大 -> 占空比大 -> 灯亮。

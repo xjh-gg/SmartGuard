@@ -26,6 +26,47 @@ static uint16_t s_count = 0;           /* 已存有效记录数（≤ EVENT_LOG_
 /* 上电扫描用的扇区缓冲（4KB 静态，栈只有 1KB 放不下） */
 static uint8_t s_sec_buf[EVENT_SEC_SIZE];
 
+/* ---- VBAT 备份 SRAM 写指针持久化（4KB @ 0x40024000，纽扣电池供电）----
+   电池在则跨断电有效：开机直接恢复写指针，跳过 4 扇区全扫描（~260ms）。
+   电池失效/数据损坏 → magic+校验失败 → 回退完整扫描（双保险）。 */
+#define EVENT_BKP_ADDR     0x40024000UL
+#define EVENT_BKP_MAGIC    0x454C4F47UL   /* 'ELOG' */
+
+typedef struct {
+    uint32_t magic;
+    uint32_t write_addr;
+    uint16_t count;
+    uint16_t checksum;   /* = (uint16_t)(magic + write_addr + count) */
+} EventLogBkp_t;
+
+/* 写指针落备份 SRAM。注意 rtc.c 的 SG_RTC_SetDateTime 结束时会
+   PWR_BackupAccessCmd(DISABLE)，所以每次写前必须重新 ENABLE */
+static void bkp_save(void)
+{
+    EventLogBkp_t *b = (EventLogBkp_t *)EVENT_BKP_ADDR;
+
+    PWR_BackupAccessCmd(ENABLE);
+    b->magic      = EVENT_BKP_MAGIC;
+    b->write_addr = s_write_addr;
+    b->count      = s_count;
+    b->checksum   = (uint16_t)(EVENT_BKP_MAGIC + s_write_addr + s_count);
+}
+
+static uint8_t bkp_restore(void)
+{
+    const EventLogBkp_t *b = (const EventLogBkp_t *)EVENT_BKP_ADDR;
+
+    if (b->magic != EVENT_BKP_MAGIC) return 0;
+    if (b->checksum != (uint16_t)(EVENT_BKP_MAGIC + b->write_addr + b->count)) return 0;
+    if ((b->write_addr & (EVENT_REC_SIZE - 1)) != 0) return 0;             /* 必须 16B 对齐 */
+    if (b->write_addr >= EVENT_LOG_SECTOR_COUNT * EVENT_SEC_SIZE) return 0;
+    if (b->count > EVENT_LOG_CAPACITY) return 0;
+
+    s_write_addr = b->write_addr;
+    s_count      = b->count;
+    return 1;
+}
+
 /* ---- 记录校验 ---- */
 static uint8_t rec_valid(const uint8_t *r)
 {
@@ -72,6 +113,17 @@ uint8_t EventLog_Init(void)
     s_present = 1;
     s_count   = 0;
 
+    /* 优先从备份 SRAM 恢复写指针（纽扣电池供电，跨断电有效），
+       校验不过才走 4 扇区全扫描 */
+    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_BKPSRAM, ENABLE);
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_PWR, ENABLE);
+    if (bkp_restore())
+    {
+        USART1_Printf("[EVENTLOG] ptr from backup SRAM: addr=%lu count=%u\r\n",
+                      (unsigned long)s_write_addr, s_count);
+        return 1;
+    }
+
     for (s = 0; s < EVENT_LOG_SECTOR_COUNT; s++)
     {
         uint16_t n = 0;
@@ -116,6 +168,7 @@ uint8_t EventLog_Init(void)
     }
 
     s_write_addr = (uint32_t)active * EVENT_SEC_SIZE + (uint32_t)off[active] * EVENT_REC_SIZE;
+    bkp_save();   /* 扫描结果落备份 SRAM，下次开机直接恢复 */
     return 1;
 }
 
@@ -185,6 +238,7 @@ void EventLog_Add(uint8_t alert_type, const Sensor_Data_t *s, uint8_t mode)
         s_write_addr = 0;
     }
     if (s_count < EVENT_LOG_CAPACITY) s_count++;
+    bkp_save();   /* 同步备份 SRAM 指针 */
 }
 
 /**
@@ -249,4 +303,5 @@ void EventLog_Clear(void)
     }
     s_write_addr = 0;
     s_count = 0;
+    bkp_save();
 }
