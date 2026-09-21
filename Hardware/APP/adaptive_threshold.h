@@ -27,7 +27,7 @@
 #define AT_LEARN_SECONDS        20      /* 基线学习期（秒），建议 >= 10 */
 #define AT_SIGMA_K              3       /* 告警触发系数：偏离 baseline 几个 sigma 才算异常 */
 #define AT_DISTANCE_DELTA_CM    30.0f   /* 距离变化触发入侵告警的最小变化量（cm） */
-#define AT_TEMP_RISE_PER_MIN    3.0f    /* 火灾辅助：1 分钟内温度上升 >= 3°C 算异常 */
+/* AT_TEMP_RISE_PER_MIN 已删除：升温速率检测从未实现，死宏清理（原 README 已知限制 #8） */
 #define AT_EWMA_ALPHA           0.01f   /* EWMA 学习率：baseline 向新值靠拢的速度（0~1） */
 
 /* ========== 基线数据结构 ========== */
