@@ -71,5 +71,7 @@ uint8_t AT_CheckFire(const Sensor_Data_t *data);
 uint8_t AT_CheckIntrusion(const Sensor_Data_t *data, float dist_prev, float dist_now);
 
 const AT_Baseline_t *AT_GetBaseline(void);
+/* 自愈等运行期修改置脏后，main 轮询取走（取走后清零）并 Config_Save 落盘 */
+uint8_t AT_TakeConfigDirty(void);
 
 #endif /* __ADAPTIVE_THRESHOLD_H__ */

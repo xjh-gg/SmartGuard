@@ -39,6 +39,9 @@
 #include "oled.h"
 #include "iwdg.h"
 #include "config_store.h"
+#include "at24c02.h"
+#include "w25qxx.h"
+#include "event_log.h"
 #include <math.h>          /* fabsf：TamperUpdate 滑动窗口判定用 */
 
 #if USE_RTC
@@ -280,6 +283,26 @@ static void Hardware_InitAll(void)
         }
     }
 #endif
+
+    /* AT24C02 与 MPU6050 共用软件 IIC 总线（PB8/PB9，地址 0x50/0x68 不冲突），
+       须在 MPU6050_Init 之后初始化（总线 GPIO 已就绪；AT24C02_Init 内部
+       也会幂等地再调一次 IIC_Init 兜底） */
+    USART1_SendString("[INIT] AT24C02 EEPROM...");
+    AT24C02_Init();
+    if (AT24C02_Check()) {
+        USART1_SendString("OK\r\n");
+    } else {
+        USART1_SendString("NOT FOUND (config persist disabled)\r\n");
+    }
+
+    USART1_SendString("[INIT] W25QXX SPI Flash...");
+    W25QXX_Init();
+    if (EventLog_Init()) {
+        USART1_SendString("OK\r\n");
+        EventLog_Dump(5);   /* 开机回显最近 5 条历史告警（黑匣子） */
+    } else {
+        USART1_SendString("NOT FOUND (event log disabled)\r\n");
+    }
 }
 
 /* ============ 采集所有传感器 ============ */
@@ -350,6 +373,20 @@ static void TamperUpdate(void)
     } else {
         g_sensor.tamper_flag = 0;
     }
+#endif
+}
+
+/* 防拆续采钩子（P3-#4 折中）：注册给 ESP8266 AT 等待循环。
+   broker 宕机时 publish 路径的完整重连最坏阻塞 ~15s，期间 task_tamper
+   停摆；本钩子在 AT 等待循环里以 5Hz 续采，维持滑动窗口活性。
+   命中时置粘滞位：阻塞可能超过 2.4s 锁存窗，等 task_decision 恢复后消费，
+   保证冻结期间的晃动一定被告警到（P3-#4 折中：不挪任务、不加 RTOS） */
+static uint8_t s_tamper_sticky = 0;
+static void TamperWaitHook(void)
+{
+    TamperUpdate();
+#if USE_MPU6050
+    if (g_sensor.tamper_flag) s_tamper_sticky = 1;
 #endif
 }
 
@@ -470,6 +507,12 @@ static void task_decision(void)
 {
     SampleAllSensors();
 
+    /* 消费 MQTT 重连阻塞期间粘滞下来的防拆命中（见 TamperWaitHook） */
+    if (s_tamper_sticky) {
+        s_tamper_sticky = 0;
+        g_sensor.tamper_flag = 1;
+    }
+
     /* 决策引擎 */
     g_alert = DecisionEngine_Run(&g_sensor);
 
@@ -493,6 +536,12 @@ static void task_decision(void)
         if (effective != ALERT_NONE) {
             if (state_changed || now - g_last_alarm_tick >= 5) {
                 LED_Toggle(1);
+
+                /* 新告警事件落盘 W25Qxx 历史日志（只在状态翻转时记一条，
+                   5s 重复告警不重复记，省 FLASH 寿命也防日志刷屏） */
+                if (state_changed) {
+                    EventLog_Add((uint8_t)effective, &g_sensor, (uint8_t)g_mode);
+                }
 
 #if USE_ESP8266
     #if USE_MQTT
@@ -548,8 +597,8 @@ static void task_decision(void)
 /* 每 1s：RTC 秒刷新 + OLED 刷新（含 WiFi/MQTT 状态采样） */
 static void task_display(void)
 {
-    /* 延迟落盘：按键置脏后在此统一擦写（见 HandleBoardKey 上方注释） */
-    if (s_config_dirty) {
+    /* 延迟落盘：按键置脏 / AT 自愈置脏后在此统一擦写（见 HandleBoardKey 上方注释） */
+    if (s_config_dirty || AT_TakeConfigDirty()) {
         s_config_dirty = 0;
         Config_Save(AT_GetBaseline(), g_mode);
     }
@@ -681,7 +730,7 @@ int main(void)
     USART1_Init(115200);
 
     USART1_SendString("\r\n====================================\r\n");
-    USART1_SendString("  SmartGuard v0.4 - Space Guard Agent\r\n");
+    USART1_SendString("  SmartGuard v0.7 - Space Guard Agent\r\n");
     USART1_SendString("====================================\r\n");
 
     Hardware_InitAll();
@@ -759,23 +808,42 @@ int main(void)
     USART1_SendString("CSV_HEADER:tick,light,distance_cm,temp_c,humi_pct,mode,alert\r\n");
 #endif
 
-    /* ========== 调度器启动（注册任务后永不返回；任务实现见上方 task_* 函数） ========== */
-    scheduler_init();
-    scheduler_add_task(task_fast, 0);          /* MQTT 下行 + 按键 + 喂狗（每轮必跑） */
-    scheduler_add_task(task_tamper, 200);      /* 防拆 5Hz（须在 task_decision 前注册） */
-    scheduler_add_task(task_decision, 2000);   /* 采样 + 决策 + 告警统一出口 */
-    scheduler_add_task(task_display, 1000);    /* RTC 秒刷 + OLED 刷新 */
+#if USE_ESP8266
+    /* P3-#4 折中：MQTT 重连长阻塞期间由 AT 等待循环回调续采防拆 */
+    ESP8266_SetWaitHook(TamperWaitHook);
+#endif
+
+    /* ========== 调度器启动（注册表批量注册，风格对齐课程模板 task_list；
+       任务实现见上方 task_* 函数。注册顺序有意义：tamper 须在 decision 之前，
+       同一轮到期时先刷新 tamper 标志再交给决策引擎） ========== */
+    {
+        static const sched_task_reg_t s_task_table[] =
+        {
+            {task_fast,      0,                             SCHED_TASK_ENABLE, "fast"},      /* MQTT 下行 + 按键 + 喂狗（每轮必跑） */
+            {task_tamper,    200,                           SCHED_TASK_ENABLE, "tamper"},    /* 防拆 5Hz */
+            {task_decision,  2000,                          SCHED_TASK_ENABLE, "decision"},  /* 采样 + 决策 + 告警统一出口 */
+            {task_display,   1000,                          SCHED_TASK_ENABLE, "display"},   /* RTC 秒刷 + OLED 刷新 */
 #if USE_MQTT
-    scheduler_add_task(task_telemetry, 10000); /* 遥测 + MQ2 阈值调试行 */
-    scheduler_add_task(task_ping, MQTT_KEEPALIVE_SEC * 1000 / 2);   /* 30s 心跳 */
+            {task_telemetry, 10000,                         SCHED_TASK_ENABLE, "telemetry"}, /* 遥测 + MQ2 阈值调试行 */
+            {task_ping,      MQTT_KEEPALIVE_SEC * 1000 / 2, SCHED_TASK_ENABLE, "ping"},      /* 30s 心跳 */
 #endif
 #if ML_DATA_COLLECT
-    scheduler_add_task(task_ml_collect, 2000); /* ML 数据采集 CSV */
+            {task_ml_collect, 2000,                         SCHED_TASK_ENABLE, "ml_collect"},/* ML 数据采集 CSV */
 #endif
 #if USE_ESP8266
-    scheduler_add_task(task_health, 300000);   /* 5min 网络健康检查 */
+            {task_health,    300000,                        SCHED_TASK_ENABLE, "health"},    /* 5min 网络健康检查 */
 #endif
-    scheduler_run();   /* 永不返回：空闲 __WFI 休眠，SysTick 1ms 唤醒，周期零漂移 */
+        };
+
+        scheduler_init();
+        if (scheduler_register_table(s_task_table,
+                (uint8_t)(sizeof(s_task_table) / sizeof(s_task_table[0])))
+            != (uint8_t)(sizeof(s_task_table) / sizeof(s_task_table[0])))
+        {
+            USART1_SendString("[SCH] WARN: task table overflow, some tasks NOT registered\r\n");
+        }
+        scheduler_run();   /* 永不返回：空闲 __WFI 休眠，SysTick 1ms 唤醒，周期零漂移 */
+    }
 
 
 

@@ -339,7 +339,7 @@
               <MiscControls></MiscControls>
               <Define>USE_STDPERIPH_DRIVER,STM32F40_41xxx</Define>
               <Undefine></Undefine>
-              <IncludePath>..\User;..\Library\inc;..\Core;..\Hardware\LED;..\Hardware\KEY;..\Hardware\Delay;..\Hardware\USART;..\Hardware\ADC;..\Hardware\PWM;..\Hardware\BEEP;..\Hardware\DHT11;..\Hardware\HCSR04;..\Hardware\OLED;..\Hardware\ESP8266;..\Hardware\APP;..\Hardware\ML;..\Hardware\RTC;..\Hardware\ML;..\Hardware\WDG;..\Hardware\CONFIG_STORE;..\Hardware\ESP32_CAM;..\Hardware\IIC;..\Hardware\MPU6050</IncludePath>
+              <IncludePath>..\User;..\Library\inc;..\Core;..\Hardware\LED;..\Hardware\KEY;..\Hardware\Delay;..\Hardware\USART;..\Hardware\ADC;..\Hardware\PWM;..\Hardware\BEEP;..\Hardware\DHT11;..\Hardware\HCSR04;..\Hardware\OLED;..\Hardware\ESP8266;..\Hardware\APP;..\Hardware\ML;..\Hardware\RTC;..\Hardware\ML;..\Hardware\WDG;..\Hardware\CONFIG_STORE;..\Hardware\ESP32_CAM;..\Hardware\IIC;..\Hardware\MPU6050;..\Hardware\AT24C02;..\Hardware\W25QXX</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -672,6 +672,36 @@
               <FileName>rtc.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\Hardware\RTC\rtc.h</FilePath>
+            </File>
+            <File>
+              <FileName>at24c02.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Hardware\AT24C02\at24c02.c</FilePath>
+            </File>
+            <File>
+              <FileName>at24c02.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Hardware\AT24C02\at24c02.h</FilePath>
+            </File>
+            <File>
+              <FileName>w25qxx.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Hardware\W25QXX\w25qxx.c</FilePath>
+            </File>
+            <File>
+              <FileName>w25qxx.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Hardware\W25QXX\w25qxx.h</FilePath>
+            </File>
+            <File>
+              <FileName>event_log.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Hardware\APP\event_log.c</FilePath>
+            </File>
+            <File>
+              <FileName>event_log.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Hardware\APP\event_log.h</FilePath>
             </File>
           </Files>
         </Group>

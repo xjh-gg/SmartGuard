@@ -1,19 +1,20 @@
 ﻿/**
   ******************************************************************************
   * @file    config_store.h
-  * @brief   SmartGuard 配置掉电存储（STM32F407 内部 FLASH）
+  * @brief   SmartGuard 配置掉电存储
   *
-  * 存储内容：基线 + 模式 + CRC32 + Magic Number
-  * 存储位置：STM32F407ZE Sector 7（0x080E0000，最后一个扇区，128KB）
-  * CRC 校验：STM32F4 硬件 CRC 单元（多项式 0x04C11DB7）
+  * 存储后端（CONFIG_USE_EEPROM 一键切换）：
+  *   1 = AT24C02 EEPROM（板载，软件 IIC PB8/PB9，地址 0x00 起 56 字节）
+  *       按字节擦写，无扇区擦除 CPU 停顿，寿命 ~100 万次 —— 默认方案
+  *   0 = 内部 FLASH Sector 11（0x080E0000，128KB）
+  *       历史方案，留作 EEPROM 未焊接时的回退
+  *
+  * 数据布局（两种后端相同）：ConfigStore_t 56 字节 = magic + 基线 + 模式 + CRC32
   *
   * 典型流程：
-  *   上电 → Config_Load() → CRC 有效？ → 恢复基线/模式，跳过 20s 学习
-  *                          → CRC 无效？→ 正常走基线学习
-  *   学习完/模式切换 → Config_Save() → 擦除 Sector 7 → 写入新数据
-  *
-  * 注意：STM32F4 内部 FLASH 擦写寿命 ≈ 10000 次，
-  *       基线只在学习完存一次、模式切换也不频繁，寿命没问题。
+  *   上电 → Config_Load() → magic+CRC 有效？ → 恢复基线/模式，跳过 20s 学习
+  *                          → 无效？→ 正常走基线学习
+  *   学习完/模式切换 → Config_Save()
   ******************************************************************************
   */
 #ifndef __CONFIG_STORE_H
@@ -23,20 +24,24 @@
 #include "decision_engine.h"   /* Guard_Mode_t */
 #include "adaptive_threshold.h" /* AT_Baseline_t */
 
-/* FLASH 存储地址：Sector 11（0x080E0000，最后 128KB，需 1MB 料号）
+/* 存储后端选择：1=AT24C02 EEPROM（默认）  0=内部 FLASH Sector 11 */
+#define CONFIG_USE_EEPROM       1
+
+/* ---- 内部 FLASH 后端参数（CONFIG_USE_EEPROM=0 时使用）----
    注意：SECTOR 与 ADDR 必须指向同一扇区！历史上曾写成
    FLASH_Sector_7（0x08060000）配 0x080E0000（Sector 11），
-   导致每次保存"擦 A 写 B"，Sector 11 从未被擦除，
-   在未擦除的 FLASH 上编程使数据层层叠加损坏，
-   掉电恢复功能从未真正工作过（实测定位修复）。 */
+   导致每次保存"擦 A 写 B"，掉电恢复从未真正工作过（实测定位修复） */
 #define CONFIG_FLASH_SECTOR     FLASH_Sector_11
 #define CONFIG_FLASH_ADDR       0x080E0000UL
 #define CONFIG_FLASH_SECTOR_SIZE (128 * 1024)
 
+/* ---- EEPROM 后端参数（CONFIG_USE_EEPROM=1 时使用）---- */
+#define CONFIG_EEPROM_ADDR      0x00    /* 配置在 AT24C02 中的起始地址 */
+
 /* 魔数："SGDG" = SmartGuard */
 #define CONFIG_MAGIC            0x53474447UL
 
-/* ==== 配置结构体（56 字节，擦除时整页擦 + 写入） ==== */
+/* ==== 配置结构体（56 字节，两种后端通用） ==== */
 typedef struct {
     uint32_t        magic;              /* 魔数，验证是我们自己存的 */
     uint16_t        light_baseline;     /* 光敏基线 */
@@ -58,7 +63,7 @@ typedef struct {
     uint32_t        crc32;              /* CRC32（校验范围 = magic 到 reserved2，不含 crc32 自己） */
 } ConfigStore_t;
 
-/* 对外接口 */
+/* 对外接口（签名与后端无关，上层零改动） */
 uint8_t  Config_Load(AT_Baseline_t *bl, Guard_Mode_t *mode);
 uint8_t  Config_Save(const AT_Baseline_t *bl, Guard_Mode_t mode);
 

@@ -3,7 +3,7 @@
 > STM32F407ZE 裸机 + 6 路传感器 + 端侧自适应阈值 + 手写 MQTT 上云的空间守护原型
 
 - **一句话**：设备自己学出"这个房间正常是什么样"，只在统计显著偏离时告警，本地蜂鸣/显示的同时把状态推上云。
-- **不做**：不依赖云端推理、不跑 RTOS、不挂外部存储。
+- **不做**：不依赖云端推理、不跑 RTOS（协作式任务调度器）。
 - **芯片**：STM32F407ZE（Cortex-M4 · 168 MHz · 192 KB RAM · 1 MB Flash）
 - **构建**：Keil MDK v5 + J-Link，当前 `0 Error(s), 0 Warning(s)`
 - **配套**：支持 MQTT 双向通信 + Web 前端（Vue 3）实时监控面板
@@ -12,7 +12,7 @@
 
 常见的门禁/烟雾报警器有三个通病：**阈值写死**（换个房间就得重调）、**误报多**（一片阴影扫过就响）、**断网即失效**。SmartGuard 想验证的做法是把决策留在端侧——先学环境基线，只在显著偏离时告警，网络只负责通知。
 
-第二个目的是工程训练：手写 MQTT 3.1.1 报文而不是接 SDK，用内部 Flash 扇区做掉电恢复而不是外挂存储，把每一类编译警告归零。这些"重复造轮子"的部分，恰好是项目里最值得讲的部分。
+第二个目的是工程训练：手写 MQTT 3.1.1 报文而不是接 SDK，用板载 EEPROM/SPI Flash 手写存储层（环形日志、撕裂校验）而不是接现成文件系统，把每一类编译警告归零。这些"重复造轮子"的部分，恰好是项目里最值得讲的部分。
 
 ## 系统架构
 
@@ -26,7 +26,7 @@
 执行层   蜂鸣 PF8 · OLED 本地面板 · LED · USART1 日志(115200)
            ↓
 通信层   ESP8266(USART3 PB10/PB11) —AT/TCP→ 手写 MQTT 3.1.1 → mosquitto
-持久层   CONFIG_STORE @ Flash Sector 7（magic + CRC32，基线与模式掉电恢复）
+持久层   AT24C02 配置掉电恢复（magic+CRC32）· W25Qxx 告警事件环形日志 · VBAT 备份域 RTC
 守护层   IWDG 2s 独立看门狗 · RTC 唤醒 · NTP 对时
 ```
 
@@ -40,6 +40,8 @@
 | 光敏电阻 | PF7 / ADC3_IN5 | ADC | ✅ 光越强 ADC 越小 |
 | HC-SR04 测距 | TRIG PC8 / ECHO PC6 | TIM8 输入捕获 | ✅ 30ms 超时返回 0 |
 | MPU6050 | SCL PB8 / SDA PB9 | 软件 I2C | ✅ 防拆/震动 |
+| AT24C02 EEPROM 256B | PB8/PB9（与 MPU6050 同总线，0x50） | 软件 I2C | ✅ 配置掉电存储 |
+| W25Qxx SPI Flash | CS PB14 / SCK PB3 / MISO PB4 / MOSI PB5 | 软件 SPI | ✅ 告警事件日志（16KB/1024 条） |
 | ESP8266 ESP-12F | TX PB10 / RX PB11 | USART3 AT | ✅ MQTT 打通 |
 | 板载按键 S1~S4 | PA0 / PE2 / PE3 / PE4 | GPIO 轮询 + 内部上拉 | ✅ 切模式 + 手动告警，实测 1 按 1 触发 |
 | 有源蜂鸣器 | PF8 | GPIO/PWM | ✅ |
@@ -64,7 +66,8 @@
 | 连续确认窗 | 入侵需累计 3 次命中才出告警，触发后清零重累积 | `decision_engine.c:152` |
 | 防拆检测 | 8 格滑动窗口（命中 >=3 次 @8dps） | 见 `main.c` `TamperUpdate()` |
 | 告警冷却 | 同类告警 5s 内不重复上报 | `esp8266.c` `SEND_COOLDOWN_MS` |
-| 掉电恢复 | Flash Sector 7 存基线+模式，CRC 校验通过则跳过 20s 学习 | `config_store.c` |
+| 掉电恢复 | AT24C02 存基线+模式（magic+CRC32，双后端可切回内部 Flash），跳过 20s 学习 | `config_store.c` |
+| 告警事件日志 | W25Qxx 环形追加写 16B/条（1024 条容量），断电黑匣子，开机回显最近 5 条 | `event_log.c` |
 | 端侧 TinyML | 4 路原始量 → 10 维特征（含偏差、倒数、平方）→ 标准化 → MLP | `ml_inference.h:89` |
 | 手写 MQTT | CONNECT/SUBSCRIBE/PUBLISH/PINGREQ，QoS 0，剩余长度单字节 | `esp8266.c:552-1064` |
 | 云端下行控制 | `+IPD` 两级状态机收帧 → `MQTT_OnCmdReceived` 驱动 PE13；实测 19/19 条命令全响应 | `esp8266.c:792-967`、见 `main.c` `MQTT_OnCmdReceived()` |
@@ -168,14 +171,14 @@ mosquitto_sub -h 192.168.137.1 -p 1883 -t 'home/#' -v
 1. **AWAY 与 SLEEP 行为一致**：模式机仅在日志与 OLED 文本上区分，判据无分支差异。
 2. **火灾温度关是死代码**：DHT11 实测 20 次采样恒为 `temp=26.0 humi=41.0` → `temp_sigma=0.0`，`adaptive_threshold.c:203` 的 `temperature < temp_ewma + 2σ` 退化成 `26.0 < 26.0` = false，`&&` 短路 → 温度关对任何温度恒放行。这块板的火灾检测实质是**纯烟雾单判据**。
 3. **火灾检测不受模式门控**：任何模式下 MQ-2 越限都告警（安全上保守，但非设计意图）。
-4. **`loop_tick` 比真实时间慢约 16%**：主循环一圈实测 ~116ms 而非 `delay_ms(100)` 的 100ms（采样 + printf + MQTT 都计入），派生间隔同比拉长——2s 状态行实测 2.32s、10s 遥测实测 11.6s、5s 告警冷却实测 7.19s。RTC 由 NTP 同步、走时准确，漂的只有这个伪时钟。
+4. ~~**`loop_tick` 比真实时间慢约 16%**~~（已修复）：主循环已改为协作式任务调度器（`scheduler.c`，周期基于真实 `g_tick`，空闲 `__WFI`），时漂消除；2s 决策/10s 遥测/30s 心跳均为真实时间。
 5. **看门狗长延时只修了 1 处**：`ESP8266_Reset` 已分段喂狗，但仍有 5 处 ≥1s 的裸 `delay_ms` 不喂狗，最危险的是 `adaptive_threshold.c:87`（在 20 次学习循环里跑 20 遍）。目前不发作只因基线学习排在 `main.c:485` 的 `IWDG_Init()` 之前——把学习挪到看门狗之后、或加运行期重学基线，立刻爆。
 6. **按键零消抖**：`KEY_Scan()` 是纯电平读取 + 优先级链，靠 `HandleBoardKey()` 的边沿检测兜底。内部上拉已消除浮空伪边沿（实测 1:1），机械抖动本身仍未过滤。
 7. **引脚复用冲突**：PF9 同时是 LED0 与 TIM14 PWM，PE14 同时是 LED3 与 TIM1 PWM，PC13 同时是 OLED CS 与 RTC 输出。叠加上面那张 LED 错位表，`LED_ON(n)` 必须先换算成实际引脚再下结论。
 8. **`AT_TEMP_RISE_PER_MIN`（`adaptive_threshold.h:30`）是死宏**，零引用，升温速率检测未实现。
 9. **MQ-2 接线正常，但封装层 `MQ2_Init/MQ2_Read` 是死代码**：`Hardware/MQ2/mq2.c` 的 `MQ2_Init()` / `MQ2_Read()` 全项目零调用；实际采样走 `Hardware/ADC/adc.c:136` 的 `ADC_ReadMQ2()`，由 `sensor_hub.c:66` 每轮主循环调用。`adc.h:46` 默认 `USE_MQ2 = 1`，实测串口日志 `[DBG] MQ2=360 th=400`、基线学习 `mq2_base=324 sigma=17`，火灾分支真实启用。原 README 误写"未接线"系 v0.4 时代残留。
 10. **凭据已外置但 git 历史仍含旧明文**：WiFi 凭据与巴法云 UID/TOPIC 均已外置到 gitignored 的 `wifi_config.h` / `bemfa_config.h`（模板见各自 `.example`），但 `esp8266.h` 与 `docs/README_v0.6_legacy.md` 的历史版本、以及 `origin/master` 仍含旧明文，公开仓库前必须处理；凭据已轮换。
-11. **注释滞后于代码**：`decision_engine.h:8` 写 OLED 用 PB3/PB5/PB9，实际 PB0/PF11/PC13 且 PB9 是软件 I2C SDA；`iwdg.h:17` 写 1s，实际 2s；**启动横幅打印 `v0.4`，版本记录已演进到 `v0.6.2`**（源码 `main.c:451` 未修正）。
+11. **注释滞后于代码**：`decision_engine.h:8` 写 OLED 用 PB3/PB5/PB9，实际 PB0/PF11/PC13 且 PB9 是软件 I2C SDA；`iwdg.h:17` 写 1s，实际 2s。~~启动横幅印 `v0.4`~~（已修正为 v0.7）。
 12. **MQTT 断网后恢复需 30s~5min，取决于网络状况**：这不是重试退避，而是**健康检查周期**决定的。`ESP8266_CheckHealth()` 只在 `loop_tick % 3000` 时调用（标称 300s，叠加第 4 条的 16% 偏差实测约 348s），其内部还要求 `s_send_fail_count >= 3` 才重建 MQTT；该计数在每次 `AT+CIPSEND` 拿不到 `>` 时 +1，而遥测每约 11.6s 发一次，攒满 3 次约需 35s。故断网恰好发生在健康检查之前 → 约 30~40s 恢复；刚错过一次健康检查 → 最坏要等满一个周期，约 5~5.8min。
 13. **broker 为外部 Windows 原生 mosquitto 服务，仓库内无配置无启动脚本**：实测进程名 `mosquitto`（PID 5684，非 Docker），同一进程同时监听 **TCP 1883**（固件 MQTT）与 **WebSocket 9001**（前端 WebSocket）。配置文件位于 `C:\Program Files (x86)\mosquitto\mosquitto.conf`，不在本仓库也不在上级目录。仓库声称的 `cd .. && ./start_mqtt.bat` 在 `D:\Projects\workspace\` 及其上级 **全盘不存在**。读者要复现前端连接，必须**自行安装 Windows mosquitto 原生服务**，在 `mosquitto.conf` 里新增一条 `listener 9001 protocol websockets`，然后启动服务。
 14. **编译验证需注意陈旧构建**：Keil UV4 的增量构建在某些情况下会使用陈旧目标文件，导致"0 Error 0 Warning"但实际未编入改动（2026-09 实测：一次构建 ZI-data 未随新增静态缓冲增长，下次全量 Rebuild 才补入 +128）。请用 `User\build_verify.bat` 验证：脚本会检查"Rebuild target"全量标记并比对所有源文件与目标文件的时间戳，避免假阳性。
@@ -192,6 +195,7 @@ mosquitto_sub -h 192.168.137.1 -p 1883 -t 'home/#' -v
 | 本轮 | MQTT 下行两级状态机 + 丢包窗口；火灾阈值 400 下限；按键内部上拉；`[DBG]` 观测行；`ESP8266_Reset` 分段喂狗 | `a227282`…`5afef93` |
 | v0.6.1 | MQTT 下行控制 + 防拆检测（滑动窗口）+ OLED 主界面重构 + Web 前端 | `0dd3314` `fca83f4` |
 | v0.6.2 | MQTT retain 双向状态同步（灯状态 + 模式状态）；物理按键切模式同步上报 broker；修复"模式命令污染灯状态 topic"bug | `e603dc3` |
+| v0.7 | 协作式调度器对齐课程模板（任务表注册/按名启停/`__WFI`）；存储四层重构：AT24C02 配置 + W25Qxx 告警事件环形日志 + VBAT RTC；入侵拍照全链路（ESP32-CAM → MQTT retain → Web 出图）；P3 加固（分段喂狗、snprintf、TXE/TC 有界等待、MQTT 跨帧拼包、重连等待钩子续采防拆） | — |
 
 ML 指标（历史 TF 管线报告，485 样本 / 388 训练 / 97 测试）：Accuracy 0.938、Recall 1.000、F1 0.900。TF 管线（`train.py` + STM32Cube.AI 路线）已删除——它与 sklearn 管线写同一个 `scaler_params.h` 但符号不兼容；现行唯一管线为 `v1_train/train_sklearn.py`（结构 10→16→8→1，与部署的 `ml_inference.h` 一致），最新指标以重新运行 `train_sklearn.py` 输出的分类报告为准。
 

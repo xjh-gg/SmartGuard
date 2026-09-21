@@ -1,16 +1,26 @@
 ﻿/**
   ******************************************************************************
   * @file    config_store.c
-  * @brief   SmartGuard 配置掉电存储实现
+  * @brief   SmartGuard 配置掉电存储实现（双后端，CONFIG_USE_EEPROM 切换）
   *
-  * 核心流程：
-  *   Save: 解锁 FLASH → 擦除 Sector 7 → 逐字写入 ConfigStore_t → 锁 FLASH
-  *   Load: 直接指针转换读取 → CRC 校验 → 有效返回 1/无效返回 0
+  * 通用流程：
+  *   Save: 填充 ConfigStore_t → 算 CRC32 → 写入后端介质
+  *   Load: 读出 56 字节 → magic 校验 → CRC 校验 → 有效才复制输出
+  *
+  * CRC 设计意图：写入是非原子的（EEPROM 分 4 页 / FLASH 逐字），写一半
+  *   掉电会留下撕裂数据。CRC 保证"要么读到完整旧数据，要么明确知道无效"，
+  *   宁可重新学习 20s 也不用撕裂基线跑决策引擎。
   ******************************************************************************
   */
 #include "config_store.h"
-#include "iwdg.h"      /* 擦除前喂狗（128KB 擦除期间 CPU 取指停顿，无法喂狗） */
+#include "usart.h"
 #include <stddef.h>   /* offsetof 宏 */
+
+#if CONFIG_USE_EEPROM
+#include "at24c02.h"
+#else
+#include "iwdg.h"      /* 擦除前喂狗（128KB 擦除期间 CPU 取指停顿，无法喂狗） */
+#endif
 
 /* ====== CRC 计算范围偏移：magic 到 reserved2，不含 crc32（由 offsetof 自动计算） ====== */
 #define CRC_RANGE_OFFSET  (offsetof(ConfigStore_t, magic))
@@ -33,46 +43,107 @@ static uint32_t Config_CalcCRC(const ConfigStore_t *cfg)
                             CRC_RANGE_LEN / 4);
 }
 
+/* 把基线/模式填进存储结构体并算好 CRC（Save 路径共用） */
+static void Config_Fill(ConfigStore_t *cfg, const AT_Baseline_t *bl, Guard_Mode_t mode)
+{
+    cfg->magic              = CONFIG_MAGIC;
+    cfg->light_baseline     = bl->light_baseline;
+    cfg->temp_baseline      = bl->temp_baseline;
+    cfg->humi_baseline      = bl->humi_baseline;
+    cfg->mode               = mode;
+    cfg->is_learned         = bl->is_learned;
+    cfg->reserved           = 0;
+    cfg->light_sigma        = bl->light_sigma;
+    cfg->mq2_sigma          = bl->mq2_sigma;
+    cfg->temp_sigma         = bl->temp_sigma;
+    cfg->humi_sigma         = bl->humi_sigma;
+    cfg->mq2_fire_threshold = bl->mq2_fire_threshold;
+    cfg->reserved2          = 0;
+    cfg->light_ewma         = bl->light_ewma;
+    cfg->temp_ewma          = bl->temp_ewma;
+    cfg->humi_ewma          = bl->humi_ewma;
+    cfg->mq2_ewma           = bl->mq2_ewma;
+    cfg->crc32              = Config_CalcCRC(cfg);   /* CRC 不包含自己，所以放最后计算 */
+}
+
+/* 校验通过后将存储结构体展开到输出参数（Load 路径共用） */
+static void Config_Unpack(const ConfigStore_t *cfg, AT_Baseline_t *bl, Guard_Mode_t *mode)
+{
+    bl->light_baseline     = cfg->light_baseline;
+    bl->temp_baseline      = cfg->temp_baseline;
+    bl->humi_baseline      = cfg->humi_baseline;
+    bl->is_learned         = cfg->is_learned;
+    bl->light_sigma        = cfg->light_sigma;
+    bl->mq2_sigma          = cfg->mq2_sigma;
+    bl->temp_sigma         = cfg->temp_sigma;
+    bl->humi_sigma         = cfg->humi_sigma;
+    bl->mq2_fire_threshold = cfg->mq2_fire_threshold;
+    bl->light_ewma         = cfg->light_ewma;
+    bl->temp_ewma          = cfg->temp_ewma;
+    bl->humi_ewma          = cfg->humi_ewma;
+    bl->mq2_ewma           = cfg->mq2_ewma;
+    *mode = cfg->mode;
+}
+
+#if CONFIG_USE_EEPROM
+/* ================= AT24C02 EEPROM 后端 ================= */
+
 /**
   * @brief  加载配置（上电时调用）
-  * @param  bl:   输出基线
-  * @param  mode: 输出模式
-  * @retval 1 = 成功（CRC 有效），0 = 失败（CRC 无效/未初始化）
+  * @retval 1 = 成功（magic+CRC 有效），0 = 失败/器件不在
   */
 uint8_t Config_Load(AT_Baseline_t *bl, Guard_Mode_t *mode)
 {
-    ConfigStore_t *p = (ConfigStore_t *)CONFIG_FLASH_ADDR;
+    ConfigStore_t cfg;
 
-    /* 1. 检查魔数 */
-    if (p->magic != CONFIG_MAGIC) return 0;
+    /* 56 字节从 EEPROM 顺序读出（器件 NACK 直接判失败） */
+    if (AT24C02_Read(CONFIG_EEPROM_ADDR, (uint8_t *)&cfg, sizeof(cfg)) != 0)
+    {
+        USART1_SendString("[CONFIG] EEPROM read fail (device missing?)\r\n");
+        return 0;
+    }
 
-    /* 2. CRC 校验 */
-    if (p->crc32 != Config_CalcCRC(p)) return 0;
+    if (cfg.magic != CONFIG_MAGIC) return 0;
+    if (cfg.crc32 != Config_CalcCRC(&cfg)) return 0;
 
-    /* 3. 数据有效，复制出来 */
-    bl->light_baseline    = p->light_baseline;
-    bl->temp_baseline     = p->temp_baseline;
-    bl->humi_baseline     = p->humi_baseline;
-    bl->is_learned        = p->is_learned;
-    bl->light_sigma       = p->light_sigma;
-    bl->mq2_sigma         = p->mq2_sigma;
-    bl->temp_sigma        = p->temp_sigma;
-    bl->humi_sigma        = p->humi_sigma;
-    bl->mq2_fire_threshold= p->mq2_fire_threshold;
-    bl->light_ewma        = p->light_ewma;
-    bl->temp_ewma         = p->temp_ewma;
-    bl->humi_ewma         = p->humi_ewma;
-    bl->mq2_ewma          = p->mq2_ewma;
-    *mode = p->mode;
+    Config_Unpack(&cfg, bl, mode);
     return 1;
 }
 
 /**
-  * @brief  保存配置（基线学习完或模式切换时调用）
-  * @param  bl:   输入基线
-  * @param  mode: 输入模式
-  * @retval 1 = 成功，0 = 失败（FLASH 擦写错误）
+  * @brief  保存配置
+  * @note   EEPROM 按字节擦写：无扇区擦除、无 CPU 停顿、无需喂狗保护，
+  *         56 字节分 4 页写入，每页写周期 ≤5ms（ACK 轮询），全程 ~20ms。
+  * @retval 1 = 成功，0 = 失败
   */
+uint8_t Config_Save(const AT_Baseline_t *bl, Guard_Mode_t mode)
+{
+    ConfigStore_t cfg;
+
+    Config_Fill(&cfg, bl, mode);
+
+    if (AT24C02_Write(CONFIG_EEPROM_ADDR, (const uint8_t *)&cfg, sizeof(cfg)) != 0)
+    {
+        USART1_SendString("[CONFIG] EEPROM write fail\r\n");
+        return 0;
+    }
+    return 1;
+}
+
+#else
+/* ================= 内部 FLASH Sector 11 后端（历史方案，回退用） ================= */
+
+uint8_t Config_Load(AT_Baseline_t *bl, Guard_Mode_t *mode)
+{
+    ConfigStore_t *p = (ConfigStore_t *)CONFIG_FLASH_ADDR;
+
+    if (p->magic != CONFIG_MAGIC) return 0;
+    if (p->crc32 != Config_CalcCRC(p)) return 0;
+
+    Config_Unpack(p, bl, mode);
+    return 1;
+}
+
 uint8_t Config_Save(const AT_Baseline_t *bl, Guard_Mode_t mode)
 {
     ConfigStore_t cfg;
@@ -81,34 +152,14 @@ uint8_t Config_Save(const AT_Baseline_t *bl, Guard_Mode_t mode)
     uint32_t *p_src;
     uint32_t *p_dst;
 
-    /* 1. 填充结构体 */
-    cfg.magic             = CONFIG_MAGIC;
-    cfg.light_baseline    = bl->light_baseline;
-    cfg.temp_baseline     = bl->temp_baseline;
-    cfg.humi_baseline     = bl->humi_baseline;
-    cfg.mode              = mode;
-    cfg.is_learned        = bl->is_learned;
-    cfg.reserved          = 0;
-    cfg.light_sigma       = bl->light_sigma;
-    cfg.mq2_sigma         = bl->mq2_sigma;
-    cfg.temp_sigma        = bl->temp_sigma;
-    cfg.humi_sigma        = bl->humi_sigma;
-    cfg.mq2_fire_threshold= bl->mq2_fire_threshold;
-    cfg.reserved2         = 0;
-    cfg.light_ewma        = bl->light_ewma;
-    cfg.temp_ewma         = bl->temp_ewma;
-    cfg.humi_ewma         = bl->humi_ewma;
-    cfg.mq2_ewma          = bl->mq2_ewma;
-    cfg.crc32             = Config_CalcCRC(&cfg);   /* CRC 不包含自己，所以放最后计算 */
+    Config_Fill(&cfg, bl, mode);
 
-    /* 2. 解锁 FLASH */
     FLASH_Unlock();
     FLASH_ClearFlag(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |
                     FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
 
-    /* 3. 擦除 Sector 7（最后一个 128KB 扇区）。
-       单 Bank：擦除期间 CPU 取指停顿（典型 ~1s，最大 ~2s），无法喂狗，
-       擦前先喂一次把 IWDG(2s) 窗口拉满。长期建议迁到 16KB 小扇区（P3 备注） */
+    /* 擦除 Sector 11（128KB）。单 Bank：擦除期间 CPU 取指停顿（典型 ~1s，
+       最大 ~2s），无法喂狗，擦前先喂一次把 IWDG(2s) 窗口拉满 */
     IWDG_Feed();
     status = FLASH_EraseSector(CONFIG_FLASH_SECTOR, VoltageRange_3);
     if (status != FLASH_COMPLETE) {
@@ -116,7 +167,6 @@ uint8_t Config_Save(const AT_Baseline_t *bl, Guard_Mode_t mode)
         return 0;
     }
 
-    /* 4. 逐字（4 字节）写入 ConfigStore_t 到 FLASH */
     p_src = (uint32_t *)&cfg;
     p_dst = (uint32_t *)CONFIG_FLASH_ADDR;
     for (i = 0; i < sizeof(cfg) / 4; i++)
@@ -128,7 +178,8 @@ uint8_t Config_Save(const AT_Baseline_t *bl, Guard_Mode_t mode)
         }
     }
 
-    /* 5. 锁 FLASH */
     FLASH_Lock();
     return 1;
 }
+
+#endif /* CONFIG_USE_EEPROM */

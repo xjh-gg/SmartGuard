@@ -61,6 +61,9 @@ void    ESP8266_SendData(const char *topic, const char *payload);
 uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt);        /* NTP/UDP 方式获取网络时间（UTC+8） */
 uint8_t ESP8266_CheckInternet(void);
 uint8_t ESP8266_CheckHealth(void);
+/* AT 等待间隙回调（P3-#4 折中）：注册后，SendAT/CONNECT/SUBSCRIBE/SEND OK
+   的等待循环每 200ms 调一次 cb，用于长阻塞期间续采防拆等高频任务 */
+void    ESP8266_SetWaitHook(void (*cb)(void));
 uint8_t ESP8266_IsWiFiOk(void);        /* 返回 WiFi 连接状态，供 OLED 状态栏使用 */
 uint8_t ESP8266_IsMQTTOk(void);       /* 返回 MQTT 会话状态，供 OLED 状态行使用 */
 
