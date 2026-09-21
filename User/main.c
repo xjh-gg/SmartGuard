@@ -441,22 +441,43 @@ static volatile uint8_t s_config_dirty = 0;
 
 static void HandleBoardKey(void)
 {
-    static uint8_t s_last_key = 0;
+    static uint8_t  s_last_key = 0;
+    static uint32_t s_last_accept = 0;   /* 上次有效变化时刻（消抖窗起点） */
+    static uint32_t s_s4_press = 0;      /* S4 按下时刻（长按计时） */
+    static uint8_t  s_s4_long = 0;       /* S4 长按已触发标志 */
     uint8_t key = KEY_Scan();
+    uint8_t prev;
+
+    /* S4 按住 ≥1.5s：回放事件日志（黑匣子导出），松手时不再触发手动告警 */
+    if (key == S4 && s_last_key == S4 && !s_s4_long && (g_tick - s_s4_press) >= 1500) {
+        s_s4_long = 1;
+        USART1_SendString("-> EVENT LOG DUMP\r\n");
+        EventLog_Dump(20);
+    }
 
     if (key == s_last_key) return;   /* 无变化，跳过 */
+    prev = s_last_key;
     s_last_key = key;
+
+    /* 机械抖动过滤：50ms 内的连续变化只跟踪不触发（S4 实测一次按下双触发） */
+    if ((g_tick - s_last_accept) < 50) return;
+    s_last_accept = g_tick;
+
+    if (key == S4) { s_s4_press = g_tick; s_s4_long = 0; }
+
+    /* S4 短按（松开且未达长按）：手动告警测试 */
+    if (prev == S4 && key == 0 && !s_s4_long) {
+        g_manual_alert = ALERT_INTRUSION;
+        g_last_alarm_tick = 0;
+        USART1_SendString("-> MANUAL ALERT TEST\r\n");
+    }
+
     if (key == 0) return;            /* 松开，不触发 */
 
     switch (key) {
         case S1: g_mode = MODE_HOME;  DecisionEngine_SetMode(g_mode); s_config_dirty = 1; USART1_SendString("-> MODE HOME\r\n");  MQTT_ReportModeStatus();  break;
         case S2: g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode); s_config_dirty = 1; USART1_SendString("-> MODE AWAY\r\n");  MQTT_ReportModeStatus();  break;
         case S3: g_mode = MODE_SLEEP; DecisionEngine_SetMode(g_mode); s_config_dirty = 1; USART1_SendString("-> MODE SLEEP\r\n"); MQTT_ReportModeStatus(); break;
-        case S4:
-            g_manual_alert = ALERT_INTRUSION;
-            g_last_alarm_tick = 0;
-            USART1_SendString("-> MANUAL ALERT TEST\r\n");
-            break;
     }
 
 #if USE_OLED
@@ -541,6 +562,28 @@ static void task_decision(void)
                    5s 重复告警不重复记，省 FLASH 寿命也防日志刷屏） */
                 if (state_changed) {
                     EventLog_Add((uint8_t)effective, &g_sensor, (uint8_t)g_mode);
+
+                    /* 分级告警音（P2-5）：三种告警靠听觉可辨，不用看屏。
+                       阻塞最长 1.2s < IWDG 2s 窗口，仅在状态翻转时播放 */
+                    switch (effective) {
+                        case ALERT_INTRUSION:   /* 入侵：急促三连音 */
+                            Beep_PlayNote(NOTE_LA_HI, 100); delay_ms(80);
+                            Beep_PlayNote(NOTE_LA_HI, 100); delay_ms(80);
+                            Beep_PlayNote(NOTE_LA_HI, 100);
+                            break;
+                        case ALERT_FIRE:        /* 火灾：连续双音交替 */
+                            Beep_PlayNote(NOTE_MI, 300);
+                            Beep_PlayNote(NOTE_LA, 300);
+                            Beep_PlayNote(NOTE_MI, 300);
+                            Beep_PlayNote(NOTE_LA, 300);
+                            break;
+                        case ALERT_TAMPER:      /* 防拆：低沉单长音 */
+                            Beep_PlayNote(BEEP_ERR, 800);
+                            break;
+                        default:                /* 环境异常：单短音 */
+                            Beep_PlayNote(NOTE_SOL, 200);
+                            break;
+                    }
                 }
 
 #if USE_ESP8266
