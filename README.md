@@ -173,10 +173,10 @@ mosquitto_sub -h 192.168.137.1 -p 1883 -t 'home/#' -v
 3. **火灾检测不受模式门控**：任何模式下 MQ-2 越限都告警（安全上保守，但非设计意图）。
 4. ~~**`loop_tick` 比真实时间慢约 16%**~~（已修复）：主循环已改为协作式任务调度器（`scheduler.c`，周期基于真实 `g_tick`，空闲 `__WFI`），时漂消除；2s 决策/10s 遥测/30s 心跳均为真实时间。
 5. **看门狗长延时只修了 1 处**：`ESP8266_Reset` 已分段喂狗，但仍有 5 处 ≥1s 的裸 `delay_ms` 不喂狗，最危险的是 `adaptive_threshold.c:87`（在 20 次学习循环里跑 20 遍）。目前不发作只因基线学习排在 `main.c:485` 的 `IWDG_Init()` 之前——把学习挪到看门狗之后、或加运行期重学基线，立刻爆。
-6. **按键零消抖**：`KEY_Scan()` 是纯电平读取 + 优先级链，靠 `HandleBoardKey()` 的边沿检测兜底。内部上拉已消除浮空伪边沿（实测 1:1），机械抖动本身仍未过滤。
+6. ~~**按键零消抖**~~（v0.7.1 已修）：`HandleBoardKey()` 增加 50ms 消抖窗，S4 双击误触发已消除；S4 改为短按（松开 <1.5s）手动告警、长按 ≥1.5s 回放事件日志。
 7. **引脚复用冲突**：PF9 同时是 LED0 与 TIM14 PWM，PE14 同时是 LED3 与 TIM1 PWM，PC13 同时是 OLED CS 与 RTC 输出。叠加上面那张 LED 错位表，`LED_ON(n)` 必须先换算成实际引脚再下结论。
-8. **`AT_TEMP_RISE_PER_MIN`（`adaptive_threshold.h:30`）是死宏**，零引用，升温速率检测未实现。
-9. **MQ-2 接线正常，但封装层 `MQ2_Init/MQ2_Read` 是死代码**：`Hardware/MQ2/mq2.c` 的 `MQ2_Init()` / `MQ2_Read()` 全项目零调用；实际采样走 `Hardware/ADC/adc.c:136` 的 `ADC_ReadMQ2()`，由 `sensor_hub.c:66` 每轮主循环调用。`adc.h:46` 默认 `USE_MQ2 = 1`，实测串口日志 `[DBG] MQ2=360 th=400`、基线学习 `mq2_base=324 sigma=17`，火灾分支真实启用。原 README 误写"未接线"系 v0.4 时代残留。
+8. ~~**`AT_TEMP_RISE_PER_MIN` 是死宏**~~（v0.7.1 已删除）。
+9. ~~**MQ2 封装层是死代码**~~（已移除）：实际采样走 `Hardware/ADC/adc.c` 的 `ADC_ReadMQ2()`，`adc.h` 默认 `USE_MQ2 = 1`，火灾分支真实启用。
 10. **凭据已外置但 git 历史仍含旧明文**：WiFi 凭据与巴法云 UID/TOPIC 均已外置到 gitignored 的 `wifi_config.h` / `bemfa_config.h`（模板见各自 `.example`），但 `esp8266.h` 与 `docs/README_v0.6_legacy.md` 的历史版本、以及 `origin/master` 仍含旧明文，公开仓库前必须处理；凭据已轮换。
 11. **注释滞后于代码**：`decision_engine.h:8` 写 OLED 用 PB3/PB5/PB9，实际 PB0/PF11/PC13 且 PB9 是软件 I2C SDA；`iwdg.h:17` 写 1s，实际 2s。~~启动横幅印 `v0.4`~~（已修正为 v0.7）。
 12. **MQTT 断网后恢复需 30s~5min，取决于网络状况**：这不是重试退避，而是**健康检查周期**决定的。`ESP8266_CheckHealth()` 只在 `loop_tick % 3000` 时调用（标称 300s，叠加第 4 条的 16% 偏差实测约 348s），其内部还要求 `s_send_fail_count >= 3` 才重建 MQTT；该计数在每次 `AT+CIPSEND` 拿不到 `>` 时 +1，而遥测每约 11.6s 发一次，攒满 3 次约需 35s。故断网恰好发生在健康检查之前 → 约 30~40s 恢复；刚错过一次健康检查 → 最坏要等满一个周期，约 5~5.8min。
