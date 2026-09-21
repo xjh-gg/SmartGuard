@@ -15,6 +15,7 @@
 #include "sensor_hub.h"
 #include "usart.h"
 #include "delay.h"
+#include "iwdg.h"   /* 学习期分段喂狗 */
 #include <math.h>
 
 static AT_Baseline_t s_bl;
@@ -72,6 +73,16 @@ void AT_Init(void)
     s_bl.is_learned = 0;
 }
 
+/* 配置脏标志：自愈重建烟雾通道后置位，main 的 task_display 轮询取走并落盘 */
+static uint8_t s_bl_dirty = 0;
+
+uint8_t AT_TakeConfigDirty(void)
+{
+    uint8_t d = s_bl_dirty;
+    s_bl_dirty = 0;
+    return d;
+}
+
 /**
   * @brief  上电后调用：阻塞学习基线
   *         每秒采 1 次，共 AT_LEARN_SECONDS 次
@@ -93,7 +104,10 @@ void AT_LearnBaseline(void)
         extern uint8_t DHT11_Read_Data(float *temp, float *humi);
         DHT11_Read_Data(&d->temperature, &d->humidity);
         USART1_Printf("[AT]   warmup %d: t=%.1f h=%.1f\r\n", w+1, d->temperature, d->humidity);
-        delay_ms(2000);   /* DHT11 要求 ≥ 1.5s 读间隔 */
+        /* DHT11 要求 ≥ 1.5s 读间隔。分段喂狗：IWDG 热复位存活，
+           热启动时狗已在跑，裸 delay_ms(2000) 恰好等于 IWDG 窗口必被咬
+           （boot loop 实测定位：热复位 → Config_Load 失败 → 学习 → 咬死循环） */
+        for (uint8_t f = 0; f < 20; f++) { delay_ms(100); IWDG_Feed(); }
     }
     USART1_Printf("[AT] warmup done, baseline learn begins\r\n");
 
@@ -114,7 +128,8 @@ void AT_LearnBaseline(void)
                       s_buf_light[i], s_buf_mq2[i],
                       s_buf_temp[i], s_buf_humi[i]);
         if (s_progress_cb) s_progress_cb(i + 1, n);
-        delay_ms(1000);
+        /* 分段喂狗（同 warmup 注释）：20 次学习循环是启动期最长的无喂狗窗口 */
+        for (uint8_t f = 0; f < 10; f++) { delay_ms(100); IWDG_Feed(); }
     }
 
     /* 计算均值 */
@@ -180,8 +195,34 @@ void AT_Update(uint16_t light, uint16_t mq2, float temp, float humi, float dist)
     float diff_temp  = temp         - s_bl.temp_ewma;
     float diff_humi  = humi         - s_bl.humi_ewma;
 
+    /* MQ-2 预热陷阱自愈：基线若在预热期学到 >2000 被判"未接入"（阈值 0xFFFF
+       永久禁用），而运行期读数连续正常，说明传感器是好的、只是预热完成。
+       0xFFFF 会被 EEPROM 持久化，没有自愈就永远不回来自火灾检测（实测复现：
+       某次冷机开机学习后 th=65535 一直恢复，MQ2=274 正常却无火灾检测）。
+       连续 AT_MQ2_RECOVER_CONFIRM 个样本正常后重建烟雾通道并置脏落盘。 */
+    #define AT_MQ2_RECOVER_CONFIRM  60   /* 决策周期 2s → 约 2 分钟确认 */
+    if (s_bl.mq2_fire_threshold == 0xFFFF) {
+        static uint8_t s_recover_hits = 0;
+
+        if (mq2 > 0 && mq2 < 1000) {
+            if (s_recover_hits < AT_MQ2_RECOVER_CONFIRM) s_recover_hits++;
+            if (s_recover_hits >= AT_MQ2_RECOVER_CONFIRM) {
+                uint16_t calc;
+
+                s_bl.mq2_ewma = (float)mq2;
+                if (s_bl.mq2_sigma < 10) s_bl.mq2_sigma = 10;   /* sigma 下限，防吸收门焊死 */
+                calc = (uint16_t)(s_bl.mq2_ewma + (float)AT_SIGMA_K * (float)s_bl.mq2_sigma);
+                s_bl.mq2_fire_threshold = calc > 400 ? calc : 400;
+                s_bl_dirty = 1;
+                USART1_Printf("[AT] MQ-2 recovered (mq2=%d), fire detection RE-ENABLED th=%d\r\n",
+                              mq2, s_bl.mq2_fire_threshold);
+            }
+        } else {
+            s_recover_hits = 0;
+        }
+    }
     /* 烟雾：偏离超过 2*sigma 不吸收（可能是真的烟雾） */
-    if (fabsf(diff_mq2) < 2.0f * (float)s_bl.mq2_sigma) {
+    else if (fabsf(diff_mq2) < 2.0f * (float)s_bl.mq2_sigma) {
         s_bl.mq2_ewma   += AT_EWMA_ALPHA * diff_mq2;
         /* 基线学习时已禁用（threshold=0xFFFF）时保持禁用，不要覆盖 */
         if (s_bl.mq2_fire_threshold != 0xFFFF) {

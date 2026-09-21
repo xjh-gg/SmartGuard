@@ -253,16 +253,6 @@ void OLED_ShowChinese(uint8_t x, uint8_t y, uint8_t no)
 #define HZ_CHAI    27   /* 拆 */
 #define HZ_QIAN    28   /* 前 */
 
-/* ============ 辅助: 光照 ADC → 百分比 ============ */
-static uint8_t light_to_pct(uint16_t adc)
-{
-    int pct;
-    if (adc >= 4000) return 0;
-    if (adc <= 200)  return 100;
-    pct = (int)(100 - ((unsigned long)(adc - 200) * 100 / 3800));
-    return (uint8_t)pct;
-}
-
 /* ============ 辅助: MQ-2 ADC → 空气质量英文 ============ */
 static const char *air_quality_str(uint16_t adc)
 {

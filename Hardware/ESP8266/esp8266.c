@@ -30,6 +30,27 @@ static uint8_t  s_mqtt_ok = 0;          /* MQTT 握手完成标志（CONNECT+SUBSCRIBE 
    喂进解析器而不是直接丢弃。 */
 static void MQTT_FeedByte(uint8_t ch);
 
+/* AT 等待间隙回调（P3-#4 折中方案）：broker 宕机时 publish 路径的完整重连
+   最坏阻塞 ~15s（CIPSTART 10s 主导），协作式调度器整体冻结，防拆 5Hz
+   采样会停。在等待循环里每 200ms 调一次本钩子，main 注册它续采防拆，
+   冻结期间的晃动检测不丢。狗本来就喂（SendAT 每 1ms IWDG_Feed）。 */
+static void (*s_wait_hook)(void) = 0;
+static uint32_t s_hook_last = 0;
+
+void ESP8266_SetWaitHook(void (*cb)(void))
+{
+    s_wait_hook = cb;
+}
+
+static void WaitHook_Tick(void)
+{
+    if (s_wait_hook != 0 && (g_tick - s_hook_last) >= 200)
+    {
+        s_hook_last = g_tick;
+        s_wait_hook();
+    }
+}
+
 /**
   * @brief  初始化 ESP8266 通信接口并连接 WiFi
   * @note   先 115200 波特率探测，失败则降级 9600；再测 AT、连 WiFi、可选连 UDP
@@ -190,6 +211,7 @@ uint8_t ESP8266_SendAT(char *cmd, char *ack, uint16_t timeout_ms)
             return 1;
         }
 
+        WaitHook_Tick();
         IWDG_Feed();
         delay_ms(1);
     }
@@ -378,6 +400,7 @@ uint8_t ESP8266_SendUDP(uint8_t *data, uint16_t len)
             }
             if (strstr((char *)ok_buf, "ERROR") ||
                 strstr((char *)ok_buf, "SEND FAIL")) break;
+            WaitHook_Tick();
             IWDG_Feed();
             delay_ms(1);
         }
@@ -588,6 +611,7 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
                 TCP_NoteFail();
                 return 0;
             }
+            WaitHook_Tick();
             IWDG_Feed();
             delay_ms(1);
         }
@@ -673,6 +697,7 @@ uint8_t ESP8266_MQTTConnect(void)
                     return 1;
                 }
             }
+            WaitHook_Tick();
             IWDG_Feed();
             delay_ms(1);
         }
@@ -725,6 +750,7 @@ uint8_t ESP8266_MQTTSubscribe(void)
                     return 1;
                 }
             }
+            WaitHook_Tick();
             IWDG_Feed();
             delay_ms(1);
         }
