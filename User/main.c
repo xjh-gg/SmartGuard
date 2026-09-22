@@ -126,6 +126,62 @@ static float   s_gyro_zero_gz = 0.0f;
    'on' = PE13 低电平点亮；'off' = PE13 高电平熄灭。
    初值 'off' 与 LED_Init() -> LED_AllOff() 的实际效果一致。 */
 static const char *g_light_state = "off";
+
+/* ---- 下行命令加固（2026-09-22 LED flood 事故后） ----
+   事故链：网页连点 → 命令 flood → 每条命令都 retain 上报 → 上报把 SEND OK
+   应答窗口挤掉 → 固件误判 session lost 重连（"DEV 离线却能控灯"）。
+   Web 端 300ms 节流只是第一道防线，任何其他 MQTT 客户端（mosquitto_pub、
+   第二个浏览器标签）都可绕过，此处为固件侧第二道防线。
+   原则：命令不丢（立即生效，UI 与设备不脱节），只合并 retain 上报——
+   灯/模式上报 500ms 最多一条，被合并的挂起，由 task_fast 在窗口过后
+   补报最后一态（保证最终一致）。
+   CAPTURE 例外：单次执行最坏阻塞主循环 ~4s（1s 探测 + 3s 等待），
+   硬限速 5s，间隔内直接丢弃（拍照非状态同步，丢弃安全）。
+   ALARM 不加固：g_manual_alert 单槽覆盖 + 决策层 5s 冷却已天然去重。 */
+#define CMD_REPORT_MIN_GAP_MS   500u
+#define CMD_CAPTURE_MIN_GAP_MS  5000u
+static uint32_t s_light_rep_tick    = 0;
+static uint8_t  s_light_rep_pending = 0;
+static uint32_t s_mode_rep_tick     = 0;
+static uint8_t  s_mode_rep_pending  = 0;
+static uint32_t s_last_capture_tick = 0;
+
+static void ReportLightCoalesced(void)
+{
+    if ((g_tick - s_light_rep_tick) >= CMD_REPORT_MIN_GAP_MS) {
+        s_light_rep_tick = g_tick;
+        ESP8266_MQTTPublish(MQTT_TOPIC_STATUS, g_light_state, 1);
+    } else {
+        s_light_rep_pending = 1;   /* 窗口内连续翻转：挂起，稍后补报最终态 */
+    }
+}
+
+static void ReportModeCoalesced(void)
+{
+    if ((g_tick - s_mode_rep_tick) >= CMD_REPORT_MIN_GAP_MS) {
+        s_mode_rep_tick = g_tick;
+        MQTT_ReportModeStatus();
+    } else {
+        s_mode_rep_pending = 1;
+    }
+}
+
+/* task_fast 每轮调用：挂起的上报在窗口过后补报（最终一致性兜底） */
+static void CmdReportFlush(void)
+{
+    if (s_light_rep_pending && (g_tick - s_light_rep_tick) >= CMD_REPORT_MIN_GAP_MS) {
+        s_light_rep_pending = 0;
+        s_light_rep_tick = g_tick;
+        USART1_Printf("[MQTT] REPORT light_state=%s (coalesced)\r\n", g_light_state);
+        ESP8266_MQTTPublish(MQTT_TOPIC_STATUS, g_light_state, 1);
+    }
+    if (s_mode_rep_pending && (g_tick - s_mode_rep_tick) >= CMD_REPORT_MIN_GAP_MS) {
+        s_mode_rep_pending = 0;
+        s_mode_rep_tick = g_tick;
+        MQTT_ReportModeStatus();
+    }
+}
+
 /* ESP8266 下行控制指令回调：收到 home/light/cmd 的 PUBLISH 时调用 */
 void MQTT_OnCmdReceived(const char *payload)
 {
@@ -137,30 +193,35 @@ void MQTT_OnCmdReceived(const char *payload)
         LED_ON(3);
         g_light_state = "on";
         USART1_Printf("[MQTT] CMD=on\r\n");
-        ESP8266_MQTTPublish(MQTT_TOPIC_STATUS, "on", 1);
+        ReportLightCoalesced();
     }
     else if (strcmp(payload, "off") == 0) {
         LED_OFF(3);
         g_light_state = "off";
         USART1_Printf("[MQTT] CMD=off\r\n");
-        ESP8266_MQTTPublish(MQTT_TOPIC_STATUS, "off", 1);
+        ReportLightCoalesced();
     }
     else if (strcmp(payload, "HOME") == 0) {
         g_mode = MODE_HOME;  DecisionEngine_SetMode(g_mode);
         USART1_Printf("[MQTT] CMD=HOME\r\n");
-        MQTT_ReportModeStatus();
+        ReportModeCoalesced();
     }
     else if (strcmp(payload, "AWAY") == 0) {
         g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode);
         USART1_Printf("[MQTT] CMD=AWAY\r\n");
-        MQTT_ReportModeStatus();
+        ReportModeCoalesced();
     }
     else if (strcmp(payload, "SLEEP") == 0) {
         g_mode = MODE_SLEEP; DecisionEngine_SetMode(g_mode);
         USART1_Printf("[MQTT] CMD=SLEEP\r\n");
-        MQTT_ReportModeStatus();
+        ReportModeCoalesced();
     }
     else if (strcmp(payload, "CAPTURE") == 0) {
+        /* 硬限速 5s：单次拍照最坏阻塞主循环 ~4s，连发会冻结调度器 */
+        if ((g_tick - s_last_capture_tick) < CMD_CAPTURE_MIN_GAP_MS) {
+            USART1_SendString("[MQTT] CMD=CAPTURE dropped (5s rate limit)\r\n");
+        } else {
+        s_last_capture_tick = g_tick;
         /* 网页手动抓拍：不等告警，立即拍一张并推 URL（retain） */
 #if USE_ESP32_CAM
         char cam_url[96];
@@ -172,6 +233,7 @@ void MQTT_OnCmdReceived(const char *payload)
             USART1_Printf("[MQTT] CMD=CAPTURE failed (%d)\r\n", cam_st);
         }
 #endif
+        }
     }
     else if (strcmp(payload, "ALARM") == 0) {
         /* 网页告警测试：等价板载 S4 短按，走完整告警链路
@@ -529,6 +591,7 @@ static void task_fast(void)
 {
 #if USE_MQTT
     ESP8266_MQTTProcessRx();
+    CmdReportFlush();   /* 被合并的灯/模式上报在此补报（500ms 窗口过后） */
 #endif
 #if USE_BOARD_KEY
     HandleBoardKey();

@@ -169,6 +169,44 @@ mosquitto_sub -h 192.168.137.1 -p 1883 -t 'home/#' -v
 | 火灾阈值反复误报 | 阈值有两个写入点，运行期那处漏掉 400 下限，安静环境塌到 ~201 后又被 2σ 吸收门锁死 | 两处统一为 `max(ewma+3σ, 400)`；实测打火机 MQ2 冲到 1082 只出 1 条告警，按旧阈值 234 会多 3 条误报 |
 | 一次按压触发多次 | 按键配 `NOPULL`，空闲态全靠外部上拉，浮空被 10Hz 轮询读成伪边沿 | 改 `GPIO_PuPd_UP`；实测 2 次按压 → 2 条打印严格 1:1，不需要软件消抖 |
 | 热复位后开机死循环 | IWDG 只能掉电关闭、跨热复位存活，而 `ESP8266_Reset` 的 2s 等待正好等于 2000ms 超时且零喂狗 | 改 `20×(delay_ms(100)+IWDG_Feed())`；冷启动本来安全是因为 `IWDG_Init` 排在基线学习之后 |
+| 命令 flood 打挂 MQTT 会话 | 网页 LED 按钮快速连点 → 下行命令 flood → 固件每条命令都 retain 上报 → 上报把 `SEND OK` 应答窗口挤掉 → 固件误判 session lost 重连，重连窗口内"上行停、下行活"（表现为 DEV 离线却能控灯） | Web 端 `ControlPanel.vue` 加 300ms 命令节流（TOO FAST 提示 + 乐观翻转回滚）；同类隐患与加固方案见下节"同类隐患排查" |
+
+## 同类隐患排查（命令/请求洪峰）
+
+由 LED flood 事故（2026-09-22，现象"DEV 离线但可控灯"）引发的全栈复查，按"用户操作/定时任务能否无节制地发命令、发请求、写存储"逐一审计。✅ = 已修复，⏳ = 方案已定待实施，ℹ️ = 有风险但可接受。
+
+### Web 前端（smartguard-web）
+
+| # | 风险点 | 说明 | 解决方案 | 状态 |
+|---|---|---|---|---|
+| W1 | LED/MODE/ACTIONS 按钮连点 | 快速连点造成 MQTT 命令 flood，是本次事故直接原因 | `sendCmd()` 统一 300ms 节流，被拦截提示 `TOO FAST`；LED 乐观翻转在发送失败时回滚 | ✅ |
+| W2 | `selectMode` 乐观更新不回滚 | 命令被节流拒发时 mode chip 已切换且已写 localStorage，UI 与设备不一致，要等固件下次 retain 上报才纠正 | 与 `toggleLed` 对齐：`sendCmd` 返回 false 时回滚 `mode` 再 `persistState()` | ✅ |
+| W3 | `CamShotCard` 404 自愈补拍绕过节流 | 缩略图 404 时直接调裸 `mqtt.publish('CAPTURE')`，不走 `sendCmd` 的 300ms；broker retain 的 seq 超前于 CAM 环内容时（环被刷/重烧），每张新 URL 404 都会再补一条 CAPTURE，而固件侧每条 CAPTURE 离线时阻塞主循环约 4s | 三重防 flood：同一 URL 只补一次 + 最小补拍间隔 10s + 连续 3 次补拍仍 404 放弃自愈（成功出图清零计数） | ✅ |
+| W4 | LIVE 快速 ON→OFF→ON 叠加拉流 | OFF 时旧 `liveLoopRun` 正阻塞在 `reader.read()`，`abort()` 的异常到达前若已重新 ON，旧循环 while 条件仍成立继续跑，与新循环并存 → 两条 `/stream` 同时打到单客户端 ESP32-CAM，第二个连接最长排队 300s | 拉流代数 `liveRunId`：每次切换递增，旧循环每轮迭代校验代数、失代立即退出 | ✅ |
+| W5 | 定时器叠加 | 已审计全部 `setInterval/setTimeout`（TopBar 1s、AppLayout 450ms、hint 2s、toast 3s、sensor.js 1s debounce 写盘），均"先 clear 再建"或单例组件 | 无需处理 | ℹ️ |
+| W6 | localStorage 高频写入 | 遥测 10s/条触发约 300KB 全量写（有 1s debounce 合并），告警受固件 5s 冷却限制，实时帧只走 blob URL 不落盘 | 频率可接受；若低端机 jank 可把 history 写盘改 `requestIdleCallback` | ℹ️ |
+
+### 固件（STM32F407）
+
+| # | 风险点 | 说明 | 解决方案 | 状态 |
+|---|---|---|---|---|
+| F1 | **下行命令零去重零限速** | `MQTT_OnCmdReceived()` 是 flood 事故在固件侧的镜像：修复前唯一防线是 Web 端 300ms 节流，任何其他 MQTT 客户端（`mosquitto_pub`、第二个浏览器标签）都可绕过 | **命令不丢、只合并上报**：on/off/HOME/AWAY/SLEEP 立即生效，retain 上报 500ms 最多一条（`ReportLightCoalesced`/`ReportModeCoalesced`），被合并的挂起由 `task_fast` 的 `CmdReportFlush()` 补报最后一态（最终一致）；CAPTURE 硬限速 5s 直接丢弃；ALARM 靠单槽覆盖+5s 冷却天然去重 | ✅ |
+| F2 | CAPTURE 阻塞主循环 ~4s | CAM 离线时 1s 探测 + 3s 等待，协作调度器整体冻结（仅靠 ReadLine 内喂狗撑住 IWDG）；连发 10 条 ≈ 40s 冻结 | 已受 F1 的 CAPTURE 5s 硬限速保护（连发最坏退化为每 5s 一次 4s 阻塞，不再持续冻结）；进一步可改状态机非阻塞（探测→等待→取图拆成三个 tick 阶段） | ✅（限速兜底）/ ⏳（非阻塞化留答辩后） |
+| F3 | `s_pending_cmd` 单槽覆盖 | 连发时后命令静默覆盖先命令，无队列无 NACK | 与 F1 的限速配合后即天然缓解；如需可靠可改 2~4 槽环形队列 | ℹ️ |
+| F4 | 已有正面防护 | 告警 5s 重复冷却、EventLog 仅状态翻转落盘、Config 脏标志 1s 合并写、60s 重连退避、遥测 10s/心跳 30s 节拍 | — | ✅ |
+| F5 | SEND OK 等待窗不容忍 +IPD 交错 | 2026-09-22 flood 实测：F1 已把 20 条命令的上报压到 2 条，但其中 1 条上报的 SEND OK 等待窗仍被 flood 尾包的 `+IPD` 挤掉 → 误判 session lost 重连一次（~2s 自愈并重报最终态，功能无损）。根因是"下行帧与 SEND OK 窗口碰撞"的残留形态 | `ESP8266_MQTTPublish` 的 SEND OK 等待循环在窗口内收到 `+IPD` 时继续等 SEND OK（字节喂解析器但不提前判失败），超时后再判丢失 | ⏳（答辩后） |
+
+**F1 实测记录（2026-09-22，mosquitto_pub 连发 20 条交替 on/off）**：20 条命令仅触发 2 条 retain 上报（首条 on + 末条 off，合并生效）；中间 18 条被 `s_pending_cmd` 单槽覆盖（状态型命令可接受）；最终态收敛正确（retained = 末条命令 off）；F5 残留的碰撞导致 1 次会话重连，~2s 自愈并自动重报灯态/模式，系统功能全程无损。
+
+### ESP32-CAM
+
+| # | 风险点 | 说明 | 解决方案 | 状态 |
+|---|---|---|---|---|
+| C1 | `/snapshot` HTTP 端点无节流无鉴权 | 同网段任何客户端可连续触发拍照，把 12 张历史环快速刷掉（真正的入侵证据被顶出环），并与串口 CAPTURE 抢 camera fb | 端点加最小间隔（如 2s，间隔内返回 429 或上一次缓存帧）；固件只在受信任热点内运行，鉴权非必需 | ⏳（答辩后） |
+| C2 | 串口 CAPTURE 无速率限制 | `g_snapshot_busy` 防并发 + STM32 同步等响应使命令天然串行化，打爆风险在 STM32 侧（见 F1/F2）而非此处 | 随 F1 落地即闭环 | ℹ️ |
+| C3 | `/stream` 单线程排队 | 已有 300s 上限 + 写失败快速退出；第二个 /stream 连接最长排队 300s（与 W4 叠加时 Vite 代理连接挂起） | 随 W4 落地即闭环 | ℹ️ |
+
+**剩余优先级**：F5 > C1 > F2 非阻塞化 > 其余（W2/W3/W4 + F1 限速已于 2026-09-22 修复并实测，固件编译 0 Error 0 Warning 验证通过）。至此命令 flood 链路形成 Web 节流（第一道）+ 固件上报合并/CAPTURE 硬限速（第二道）双层防线；F5 是 flood 下仍会偶发一次重连的最后残留。
 
 ## 已知限制
 
