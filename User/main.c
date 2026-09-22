@@ -160,6 +160,26 @@ void MQTT_OnCmdReceived(const char *payload)
         USART1_Printf("[MQTT] CMD=SLEEP\r\n");
         MQTT_ReportModeStatus();
     }
+    else if (strcmp(payload, "CAPTURE") == 0) {
+        /* 网页手动抓拍：不等告警，立即拍一张并推 URL（retain） */
+#if USE_ESP32_CAM
+        char cam_url[96];
+        ESP32CAM_Status_t cam_st = ESP32CAM_TriggerCapture(cam_url, sizeof(cam_url));
+        if (cam_st == CAM_OK) {
+            USART1_Printf("[MQTT] CMD=CAPTURE photo: %s\r\n", cam_url);
+            ESP8266_MQTTPublish(MQTT_TOPIC_CAM_SHOT, cam_url, 1);
+        } else {
+            USART1_Printf("[MQTT] CMD=CAPTURE failed (%d)\r\n", cam_st);
+        }
+#endif
+    }
+    else if (strcmp(payload, "ALARM") == 0) {
+        /* 网页告警测试：等价板载 S4 短按，走完整告警链路
+           （蜂鸣器+LED+拍照+MQTT+W25Qxx 落盘），由 task_decision 统一出口消费 */
+        g_manual_alert = ALERT_INTRUSION;
+        g_last_alarm_tick = 0;
+        USART1_SendString("[MQTT] CMD=ALARM (manual alert test)\r\n");
+    }
     else {
         USART1_Printf("[MQTT] unknown CMD: %s\r\n", payload);
     }
@@ -773,7 +793,7 @@ int main(void)
     USART1_Init(115200);
 
     USART1_SendString("\r\n====================================\r\n");
-    USART1_SendString("  SmartGuard v0.7 - Space Guard Agent\r\n");
+    USART1_SendString("  SmartGuard v0.7.2 - Space Guard Agent\r\n");
     USART1_SendString("====================================\r\n");
 
     Hardware_InitAll();

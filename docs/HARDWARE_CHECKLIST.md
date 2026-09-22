@@ -11,15 +11,15 @@
 | MCU | STM32F407ZE | 168MHz, 3.3V GPIO | 所有 IO 不得直接接 5V（除 5V-tolerant 引脚如 PB0/PB1） |
 | OLED | 0.96" SSD1306 + GT20L1616 字库芯片，8 脚 SPI | **VCC=5V**, SPI Mode 0 | **CS2 必须接 VCC**；FSO 悬空 |
 | HCSR04 | 超声波测距 | **VCC=5V**，Trig=PC8, Echo=PC6 | 3.3V 供电无回波 |
-| ESP8266 | WiFi 透传模块 | USART3 PB10/PB11, **9600bps** | GND 与单片机共地；供电 ≥200mA |
+| ESP8266 | WiFi 透传模块 | USART3 PB10/PB11, **115200bps** | GND 与单片机共地；供电 ≥200mA；无响应先重新插拔（接触不良高发） |
 | ESP32-CAM | 摄像头联动 | USART2 PA2/PA3, **115200bps** | GND 共地；5V 供电 ≥500mA |
 | DHT11 | 单总线温湿度 | PG9 | 建议 4.7kΩ 上拉到 3.3V；读取间隔 ≥1.5s |
 | 光敏电阻 | ADC | PF7 → ADC3_IN5 | 光照越强，ADC 值越小 |
-| MQ-2 | 烟雾 ADC | PA6 → ADC1_IN6 | 需 5V 供电，未接时代码自动跳过 |
+| MQ-2 | 烟雾 ADC | PA4 → ADC1_IN4 | 需 5V 供电，未接时代码自动跳过 |
 | 矩阵键盘 | 4×4 GPIO | 列 PB7/PA4/PG15/PC7，行 PC9/PB6/PE6/PA8 | 键位映射为 123A / 456B / 789C / *0#D |
 | LED | GPIO | PF9/PF10/PE13/PE14（低电平亮） | - |
 | BEEP | TIM13 PWM | PF8 | 无源蜂鸣器，PWM 50% 占空比发声 |
-| IWDG | 独立看门狗 | LSI 32kHz，1s 超时 | 主循环必须 1s 内喂狗一次 |
+| IWDG | 独立看门狗 | LSI 32kHz，2s 超时 | 基线学习完成后才启动；长阻塞操作必须分段喂狗 |
 | RTC | 实时时钟 | LSE 优先，fallback LSI | PC13 需禁用 Tamper 才可用于 OLED_CS |
 | PWM | TIM1/TIM14 | PF9（手机模式）/ PE14（家居模式） | 与 LED 共用引脚，注意复用冲突 |
 
@@ -142,6 +142,8 @@ AI Thinker ESP32-CAM 下排（U0R/U0T 所在排）针序为：
 #### 常见问题
 
 - **STM32 收不到 READY**：确认 ESP32-CAM 已烧录配套固件；确认波特率 115200；**首先排除上方针脚陷阱（GND/R、VCC）**；确认 GND 共地。
+- **重新插拔 CAM 后要不要按复位**：不用。STM32 每次抓拍前会自动重发 STATUS 握手；但 CAM 重上电需 10~20s 连 WiFi 才应答，此窗口内首次抓拍会 `failed (-1)`（CAM_OFFLINE），属预期，等几秒重试即可。
+- **上电大灯（GPIO4 闪光灯）常亮**：上电瞬态 GPIO4 浮空所致，固件起来后自灭；只接 5V/GND 未接串口时属正常现象。
 - **触发拍照无 URL 返回**：ESP32-CAM 需连接 WiFi 并能访问图床/服务器；检查串口日志。
 - **ESP32-CAM 不断重启**：供电不足，5V 电流必须 ≥500mA。经 USB hub 供电时即使外接大功率电源也可能因瞬时压降触发 `Brownout detector was triggered`，满血固件（摄像头+WiFi）建议直插笔记本 USB 口或独立 5V/2A 电源；可降低 WiFi 发射功率（`WiFi.setTxPower(WIFI_POWER_8_5dBm)`）削减峰值电流。
 
@@ -234,12 +236,13 @@ AI Thinker ESP32-CAM 下排（U0R/U0T 所在排）针序为：
 #### 参数
 
 - 时钟源：LSI 32kHz
-- 默认超时：1s
+- 默认超时：2s
 - 喂狗函数：`IWDG_Feed()`
 
 #### 常见问题
 
-- **系统不断复位**：主循环某处阻塞超过 1s；检查 DHT11/HCSR04 等阻塞操作是否超时保护正常。
+- **系统不断复位**：某处阻塞超过 2s 未喂狗；检查长等待循环（AT 应答、基线学习、FLASH 擦除）是否已分段喂狗。
+- **热复位后上电即复位循环**：IWDG 跨热复位存活；凡 >1s 的裸 `delay_ms` 都是嫌疑对象（2026-09 实测：`ESP8266_Reset` 2s 等待、AT 基线学习 24s 均因此触发过）。
 - **Debug 模式卡死**：ST 库函数版 IWDG 可能因 `assert_param` 死循环；当前已改用直接寄存器写。
 
 ---
@@ -276,12 +279,54 @@ AI Thinker ESP32-CAM 下排（U0R/U0T 所在排）针序为：
 
 ---
 
+### 2.12 板载按键 S1~S4（2026-09-21 实测修正）
+
+#### 引脚与极性
+
+| 按键 | 引脚 | 功能 |
+|------|------|------|
+| S1 | PA0 | 在家模式（HOME） |
+| S2 | PE2 | 离家模式（AWAY） |
+| S3 | PE3 | 睡眠模式（SLEEP） |
+| S4 | PE4 | 短按=手动告警测试；长按 ≥1.5s=串口回放事件日志 |
+
+**四个键全部低电平有效（含 PA0），全部配内部上拉**——这是实测结论：
+课程模板注释称 "PA0=WK_UP 外部下拉、按下为高"，但 GEC-M4 这块板 PA0 实际带外部上拉
+（配内部下拉时空闲仍读 1 可证），按下接 GND。极性判错会导致 PA0 被当成"一直按住"，
+并在 if-else 优先级里把 S2/S3/S4 全部屏蔽（四键"全失灵"的典型根因）。
+排障手段：`HandleBoardKey` 可临时加原始电平变化打印（KEYDBG），一键定位硬件/软件问题。
+
+---
+
+### 2.13 W25Q128 事件日志 FLASH
+
+#### 接线
+
+| 信号 | 引脚 | 备注 |
+|------|------|------|
+| CS | PB14 | 软件 SPI 模式 0 |
+| SCK | PB3 | 注意是 JTDO 复用脚，调试器须 SWD 模式 |
+| MISO | PB4 | NJTRST 复用脚，同上 |
+| MOSI | PB5 | |
+
+#### 常见问题
+
+- **能读 ID（0xEF17）但擦写全部静默失败**：大概率是**写保护位遗留锁定**（共享课程板高发：
+  之前有人做写保护实验留下非易失配置）。看开机日志三行：
+  `[EVENTLOG] ID=0xEF17 SR1=.. SR2=.. SR3=..` → SR1 的 BP 位（0x7C）、SR2 的 CMP 位（0x40）、
+  SR3 的 WPS 位（0x04）任一置位都会锁阵列；固件已自动清除并做"擦→写→读回"自检，
+  `write selftest: PASS` 即恢复。SR3 的 WPS=1 最隐蔽：BP/CMP 全 0 也写不进。
+- **记录数非零但回显 (empty)**：备份 SRAM 指针与 FLASH 脱节（跨固件烧录存活），
+  固件会交叉验证并回退全扫描自愈，看到 `backup ptr stale vs FLASH, fallback to scan` 即此情况。
+
+---
+
 ## 3. 首次上电检查清单
 
 - [ ] 所有 GND 共地
 - [ ] HCSR04 VCC = 5V
 - [ ] OLED VCC = 5V，CS2 = VCC
-- [ ] ESP8266 GND 共地，USART3 波特率 9600，CH_PD 接 VCC
+- [ ] ESP8266 GND 共地，USART3 波特率 115200，CH_PD 接 VCC
 - [ ] ESP32-CAM 5V 供电 ≥500mA，USART2 波特率 115200
 - [ ] DHT11 数据线 PG9 有上拉（可选但建议）
 - [ ] MQ-2 若接入则 VCC = 5V，并设置 USE_MQ2=1

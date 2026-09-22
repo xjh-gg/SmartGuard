@@ -1,0 +1,44 @@
+device STM32F407ZE
+if SWD
+speed 4000
+connect
+h
+mem8 0x40020010, 1
+mem8 0x40021010, 1
+g
+sleep 1500
+h
+mem8 0x40020010, 1
+mem8 0x40021010, 1
+g
+sleep 1500
+h
+mem8 0x40020010, 1
+mem8 0x40021010, 1
+g
+sleep 1500
+h
+mem8 0x40020010, 1
+mem8 0x40021010, 1
+g
+sleep 1500
+h
+mem8 0x40020010, 1
+mem8 0x40021010, 1
+g
+sleep 1500
+h
+mem8 0x40020010, 1
+mem8 0x40021010, 1
+g
+sleep 1500
+h
+mem8 0x40020010, 1
+mem8 0x40021010, 1
+g
+sleep 1500
+h
+mem8 0x40020010, 1
+mem8 0x40021010, 1
+g
+q

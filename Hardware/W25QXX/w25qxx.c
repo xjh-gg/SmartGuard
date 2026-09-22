@@ -23,6 +23,12 @@
 /* ---- 指令集 ---- */
 #define W25QXX_CMD_READ_ID     0x90
 #define W25QXX_CMD_READ_SR1    0x05
+#define W25QXX_CMD_READ_SR2    0x35
+#define W25QXX_CMD_READ_SR3    0x15
+#define W25QXX_CMD_WRITE_SR1   0x01
+#define W25QXX_CMD_WRITE_SR2   0x31
+#define W25QXX_CMD_WRITE_SR3   0x11
+#define W25QXX_CMD_GLB_UNLOCK  0x98   /* 全局解除独立块锁（WPS=1 时有效） */
 #define W25QXX_CMD_WRITE_EN    0x06
 #define W25QXX_CMD_SECTOR_ER   0x20   /* 4KB */
 #define W25QXX_CMD_PAGE_PROG   0x02
@@ -113,6 +119,84 @@ uint8_t W25QXX_ReadSR(void)
     W25QXX_CS_H();
 
     return sr;
+}
+
+/**
+  * @brief  读状态寄存器 2（指令 0x35；CMP/QE/SRP1 等高位状态）
+  */
+uint8_t W25QXX_ReadSR2(void)
+{
+    uint8_t sr;
+
+    W25QXX_CS_L();
+    W25QXX_SPI_Byte(W25QXX_CMD_READ_SR2);
+    sr = W25QXX_SPI_Byte(0xFF);
+    W25QXX_CS_H();
+
+    return sr;
+}
+
+/**
+  * @brief  写状态寄存器 1/2（清 BP 块保护、CMP 互补保护用）
+  * @note   SR 写同样受 /WP 引脚门禁：/WP 拉低时本调用会被芯片静默忽略，
+  *         调用方应写后读回比对确认是否生效
+  */
+void W25QXX_WriteSR1(uint8_t v)
+{
+    W25QXX_WriteEnable();
+    W25QXX_CS_L();
+    W25QXX_SPI_Byte(W25QXX_CMD_WRITE_SR1);
+    W25QXX_SPI_Byte(v);
+    W25QXX_CS_H();
+    W25QXX_WaitBusy();
+}
+
+void W25QXX_WriteSR2(uint8_t v)
+{
+    W25QXX_WriteEnable();
+    W25QXX_CS_L();
+    W25QXX_SPI_Byte(W25QXX_CMD_WRITE_SR2);
+    W25QXX_SPI_Byte(v);
+    W25QXX_CS_H();
+    W25QXX_WaitBusy();
+}
+
+/**
+  * @brief  读状态寄存器 3（指令 0x15；bit2=WPS 写保护选择，非易失）
+  * @note   WPS=1 时芯片改用独立块锁（IBL）机制，上电默认全阵列锁定，
+  *         BP/CMP 全 0 阵列也写不进——"读正常、SR 可写、阵列只读"的隐形门禁
+  */
+uint8_t W25QXX_ReadSR3(void)
+{
+    uint8_t sr;
+
+    W25QXX_CS_L();
+    W25QXX_SPI_Byte(W25QXX_CMD_READ_SR3);
+    sr = W25QXX_SPI_Byte(0xFF);
+    W25QXX_CS_H();
+
+    return sr;
+}
+
+void W25QXX_WriteSR3(uint8_t v)
+{
+    W25QXX_WriteEnable();
+    W25QXX_CS_L();
+    W25QXX_SPI_Byte(W25QXX_CMD_WRITE_SR3);
+    W25QXX_SPI_Byte(v);
+    W25QXX_CS_H();
+    W25QXX_WaitBusy();
+}
+
+/**
+  * @brief  全局解除独立块锁（0x98；仅 WPS=1 时有意义，否则芯片忽略）
+  */
+void W25QXX_GlobalUnlock(void)
+{
+    W25QXX_WriteEnable();
+    W25QXX_CS_L();
+    W25QXX_SPI_Byte(W25QXX_CMD_GLB_UNLOCK);
+    W25QXX_CS_H();
 }
 
 /**
