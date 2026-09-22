@@ -43,10 +43,10 @@
 | AT24C02 EEPROM 256B | PB8/PB9（与 MPU6050 同总线，0x50） | 软件 I2C | ✅ 配置掉电存储 |
 | W25Qxx SPI Flash | CS PB14 / SCK PB3 / MISO PB4 / MOSI PB5 | 软件 SPI | ✅ 告警事件日志（16KB/1024 条） |
 | ESP8266 ESP-12F | TX PB10 / RX PB11 | USART3 AT | ✅ MQTT 打通 |
-| 板载按键 S1~S4 | PA0 / PE2 / PE3 / PE4 | GPIO 轮询 + 内部上拉 | ✅ 切模式 + 手动告警，实测 1 按 1 触发 |
-| 有源蜂鸣器 | PF8 | GPIO/PWM | ✅ |
+| 板载按键 S1~S4 | PA0 / PE2 / PE3 / PE4 | GPIO 轮询 + 内部上拉 | ✅ 四键全部**低电平有效**（含 PA0，实测为准；课程模板注释称 WK_UP 高有效，与本板不符） |
+| 无源蜂鸣器 | PF8 | TIM13_CH1 PWM | ✅ 分级告警音（入侵三连音/火灾双音/防拆长音） |
 | 板载 LED D0~D3 | PF9 / PF10 / PE13 / PE14 | GPIO | ⚠️ 驱动编号与宏名错位，见表下注 |
-| ESP32-CAM | 独立供电与串口 | HTTP | ⚠️ 二级视觉，未参与决策 |
+| ESP32-CAM | USART2 PA2/PA3 + 独立 5V 供电 | 串口指令 + HTTP | ✅ 告警抓拍 + 12 张历史环（seq 序号）+ MJPEG 实时流 |
 | SG90 舵机 | — | — | ❌ 驱动为空桩 |
 | 4×4 矩阵键盘 | COL2 = PA4 | GPIO | ❌ 弃用（与 MQ-2 抢 PA4） |
 
@@ -68,6 +68,9 @@
 | 告警冷却 | 同类告警 5s 内不重复上报 | `esp8266.c` `SEND_COOLDOWN_MS` |
 | 掉电恢复 | AT24C02 存基线+模式（magic+CRC32，双后端可切回内部 Flash），跳过 20s 学习 | `config_store.c` |
 | 告警事件日志 | W25Qxx 环形追加写 16B/条（1024 条容量），断电黑匣子，开机回显最近 5 条 | `event_log.c` |
+| 存储自证自愈 | 开机"擦→写→读回→比对"自检；SR1/SR2/SR3 诊断，BP/CMP/WPS 写保护位自动解除（共享课程板常见遗留锁定，本板实测 WPS=1 全阵列锁定）；写后读回校验 | `event_log.c` `w25qxx.c` |
+| 备份指针交叉验证 | 备份 SRAM 指针恢复后抽查末条记录，与 FLASH 实际内容脱节自动回退 4 扇区全扫描 | `event_log.c` |
+| 远程抓拍/告警测试 | MQTT 命令 `CAPTURE`（立即拍照并 retain 回推 URL）、`ALARM`（等价 S4 短按，走完整告警链路） | `main.c MQTT_OnCmdReceived()` |
 | 端侧 TinyML | 4 路原始量 → 10 维特征（含偏差、倒数、平方）→ 标准化 → MLP | `ml_inference.h:89` |
 | 手写 MQTT | CONNECT/SUBSCRIBE/PUBLISH/PINGREQ，QoS 0，剩余长度单字节 | `esp8266.c:552-1064` |
 | 云端下行控制 | `+IPD` 两级状态机收帧 → `MQTT_OnCmdReceived` 驱动 PE13；实测 19/19 条命令全响应 | `esp8266.c:792-967`、见 `main.c` `MQTT_OnCmdReceived()` |
@@ -85,7 +88,8 @@
 |---|---|
 | 位置 | `D:\Projects\workspace\smartguard-web\` |
 | 技术栈 | Vue 3 + Vite + Pinia + ECharts + mqtt.js（另含 vue-router、dayjs、@lucide/vue） |
-| 页面 | Dashboard / History / Settings / About（`src/views/*View.vue`） |
+| 页面 | Dashboard / History / About（`src/views/*View.vue`，Settings 已移除） |
+| 看板交互 | CAM 卡片：实时 MJPEG（fetch+AbortController 拉流，Vite 代理同源）↔ 12 张抓拍胶片条（seq 终身序号 + HTTP 缓存，切换秒开）；告警时间线：类型/时间双重筛选、≤60s 连续同型聚为事件簇、中文展示；History：分层存储（2h×10s 原始点 + 7d×5min 均值桶），距离曲线叠加告警竖标 |
 | 连接方式 | MQTT over WebSocket → `ws://192.168.137.1:9001` |
 | **订阅 topic** | 同时订阅 `home/sensor/status`（遥测 + ALERT 告警）、`home/light/status`（固件 retain 的真实灯状态）与 `home/mode/status`（固件 retain 的真实模式状态）。后两者用于纠正按钮 / chip 状态，不再只依赖 localStorage 乐观更新 |
 | **按钮同步** | `ControlPanel.vue` 同时注册 `onLightStatus` 与 `onModeStatus` 回调，前者收到 `on` / `off` 更新 `ledOn`，后者收到 `HOME` / `AWAY` / `SLEEP` 更新当前模式 chip。Broker retained 消息在 WebSocket CONNECT 后极短时间内送达，刷新页面后按钮与 chip 100ms 内显示真实状态 |
@@ -172,7 +176,7 @@ mosquitto_sub -h 192.168.137.1 -p 1883 -t 'home/#' -v
 2. **火灾温度关是死代码**：DHT11 实测 20 次采样恒为 `temp=26.0 humi=41.0` → `temp_sigma=0.0`，`adaptive_threshold.c:203` 的 `temperature < temp_ewma + 2σ` 退化成 `26.0 < 26.0` = false，`&&` 短路 → 温度关对任何温度恒放行。这块板的火灾检测实质是**纯烟雾单判据**。
 3. **火灾检测不受模式门控**：任何模式下 MQ-2 越限都告警（安全上保守，但非设计意图）。
 4. ~~**`loop_tick` 比真实时间慢约 16%**~~（已修复）：主循环已改为协作式任务调度器（`scheduler.c`，周期基于真实 `g_tick`，空闲 `__WFI`），时漂消除；2s 决策/10s 遥测/30s 心跳均为真实时间。
-5. **看门狗长延时只修了 1 处**：`ESP8266_Reset` 已分段喂狗，但仍有 5 处 ≥1s 的裸 `delay_ms` 不喂狗，最危险的是 `adaptive_threshold.c:87`（在 20 次学习循环里跑 20 遍）。目前不发作只因基线学习排在 `main.c:485` 的 `IWDG_Init()` 之前——把学习挪到看门狗之后、或加运行期重学基线，立刻爆。
+5. ~~**看门狗长延时只修了 1 处**~~（v0.7.1 已修）：`AT_LearnBaseline` 学习循环已分段喂狗；`ESP8266_Reset` 等长等待均有界喂狗。
 6. ~~**按键零消抖**~~（v0.7.1 已修）：`HandleBoardKey()` 增加 50ms 消抖窗，S4 双击误触发已消除；S4 改为短按（松开 <1.5s）手动告警、长按 ≥1.5s 回放事件日志。
 7. **引脚复用冲突**：PF9 同时是 LED0 与 TIM14 PWM，PE14 同时是 LED3 与 TIM1 PWM，PC13 同时是 OLED CS 与 RTC 输出。叠加上面那张 LED 错位表，`LED_ON(n)` 必须先换算成实际引脚再下结论。
 8. ~~**`AT_TEMP_RISE_PER_MIN` 是死宏**~~（v0.7.1 已删除）。
@@ -196,6 +200,8 @@ mosquitto_sub -h 192.168.137.1 -p 1883 -t 'home/#' -v
 | v0.6.1 | MQTT 下行控制 + 防拆检测（滑动窗口）+ OLED 主界面重构 + Web 前端 | `0dd3314` `fca83f4` |
 | v0.6.2 | MQTT retain 双向状态同步（灯状态 + 模式状态）；物理按键切模式同步上报 broker；修复"模式命令污染灯状态 topic"bug | `e603dc3` |
 | v0.7 | 协作式调度器对齐课程模板（任务表注册/按名启停/`__WFI`）；存储四层重构：AT24C02 配置 + W25Qxx 告警事件环形日志 + VBAT RTC；入侵拍照全链路（ESP32-CAM → MQTT retain → Web 出图）；P3 加固（分段喂狗、snprintf、TXE/TC 有界等待、MQTT 跨帧拼包、重连等待钩子续采防拆） | — |
+| v0.7.1 | SLEEP 语义补全（关入侵/照明，留防拆/火灾）；备份 SRAM 写指针；分级告警音；S4 消抖 + 长按回放日志；死宏清理 | — |
+| v0.7.2 | 按键极性实测修正（四键全低有效，含 PA0）；W25Qxx 写保护自愈（SR 诊断 + BP/CMP/WPS 解除 + 写自检 + 读回校验 + 指针交叉验证）；CAM 12 张历史环 + seq 终身序号 + HTTP 缓存头；MQTT `CAPTURE`/`ALARM` 远程命令；Web 看板重构（实时/胶片条、聚合时间线、History 7 天分层、About 项目文档页） | — |
 
 ML 指标（历史 TF 管线报告，485 样本 / 388 训练 / 97 测试）：Accuracy 0.938、Recall 1.000、F1 0.900。TF 管线（`train.py` + STM32Cube.AI 路线）已删除——它与 sklearn 管线写同一个 `scaler_params.h` 但符号不兼容；现行唯一管线为 `v1_train/train_sklearn.py`（结构 10→16→8→1，与部署的 `ml_inference.h` 一致），最新指标以重新运行 `train_sklearn.py` 输出的分类报告为准。
 

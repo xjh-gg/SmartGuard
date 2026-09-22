@@ -113,16 +113,89 @@ uint8_t EventLog_Init(void)
     s_present = 1;
     s_count   = 0;
 
+    /* 状态寄存器诊断 + 自动解除块保护：
+       症状"ReadID 正常但擦写全部被静默忽略"对应两类软件可解的门禁——
+       SR1 的 BP0-2/TB/SEC 块保护位（0x7C）、SR2 的 CMP 互补保护位（0x40）。
+       若写 SR 后读回不变化，则是 /WP 引脚硬件拉低（软件无解）或 SRP 锁定 */
+    {
+        uint8_t sr1 = W25QXX_ReadSR();
+        uint8_t sr2 = W25QXX_ReadSR2();
+        uint8_t sr3 = W25QXX_ReadSR3();
+
+        USART1_Printf("[EVENTLOG] ID=0x%04X SR1=0x%02X SR2=0x%02X SR3=0x%02X\r\n",
+                      wid, sr1, sr2, sr3);
+        if (sr1 & 0x7C) {
+            W25QXX_WriteSR1(0x00);
+            USART1_Printf("[EVENTLOG] clear BP -> SR1=0x%02X\r\n", W25QXX_ReadSR());
+        }
+        if (sr2 & 0x40) {
+            W25QXX_WriteSR2((uint8_t)(sr2 & ~0x40u));
+            USART1_Printf("[EVENTLOG] clear CMP -> SR2=0x%02X\r\n", W25QXX_ReadSR2());
+        }
+        if (sr3 & 0x04) {
+            /* WPS=1：独立块锁模式（IBL），上电默认全阵列锁定，BP/CMP 全 0
+               也写不进——"读正常、SR 可写、阵列只读"的隐形门禁（本板实测中招，
+               疑为共享课程板之前做写保护实验留下的非易失配置）。
+               清 WPS 后补一次 0x98 全局解锁，防 IBL 位仍处于锁定态 */
+            W25QXX_WriteSR3((uint8_t)(sr3 & ~0x04u));
+            USART1_Printf("[EVENTLOG] clear WPS -> SR3=0x%02X\r\n", W25QXX_ReadSR3());
+            W25QXX_GlobalUnlock();
+        }
+    }
+
+    /* 写通路自检：用日志区外的 4 号扇区做 擦->写->读回->比对->擦 全链路。
+       ReadID 通过只能证明 MISO/MOSI 通，不能证明页编程真的落盘；
+       NOR 写失败是静默的，必须读回比对才有证据。每次开机 2 次扇区擦除
+       (~90ms)，10 万次擦写寿命下可忽略 */
+    {
+        static const uint8_t pat[EVENT_REC_SIZE] =
+            { 0xEB, 'S', 'G', 'T', 'E', 'S', 'T', 0, 1, 2, 3, 4, 5, 6, 7, 0xA5 };
+        uint8_t rb[EVENT_REC_SIZE];
+        uint8_t ok;
+
+        W25QXX_SectorErase(EVENT_LOG_SECTOR_COUNT * EVENT_SEC_SIZE);
+        W25QXX_PageWrite(EVENT_LOG_SECTOR_COUNT * EVENT_SEC_SIZE, pat, EVENT_REC_SIZE);
+        W25QXX_Read(EVENT_LOG_SECTOR_COUNT * EVENT_SEC_SIZE, rb, EVENT_REC_SIZE);
+        ok = (memcmp(pat, rb, EVENT_REC_SIZE) == 0) ? 1 : 0;
+        W25QXX_SectorErase(EVENT_LOG_SECTOR_COUNT * EVENT_SEC_SIZE);
+        USART1_Printf("[EVENTLOG] write selftest: %s\r\n", ok ? "PASS" : "FAIL");
+        if (!ok) {
+            /* 读回全 0xFF = 擦除生效但编程没生效；非 0xFF 垃圾 = 连擦除都没生效 */
+            USART1_Printf("[EVENTLOG] selftest readback: %02X %02X %02X %02X\r\n",
+                          rb[0], rb[1], rb[2], rb[3]);
+        }
+    }
+
     /* 优先从备份 SRAM 恢复写指针（纽扣电池供电，跨断电有效），
        校验不过才走 4 扇区全扫描 */
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_BKPSRAM, ENABLE);
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_PWR, ENABLE);
     if (bkp_restore())
     {
+        /* 交叉验证：备份 SRAM 跨固件烧录/旧版本存活，可能与 FLASH 实际
+           内容脱节（旧记录格式、写未落盘）。抽查"最后一条记录"，校验失败
+           放弃快照，回退完整扫描自愈 */
+        if (s_count > 0)
+        {
+            uint8_t  last[EVENT_REC_SIZE];
+            uint32_t last_addr = (s_write_addr >= EVENT_REC_SIZE)
+                               ? s_write_addr - EVENT_REC_SIZE
+                               : (EVENT_LOG_SECTOR_COUNT * EVENT_SEC_SIZE - EVENT_REC_SIZE);
+
+            W25QXX_Read(last_addr, last, EVENT_REC_SIZE);
+            if (!rec_valid(last))
+            {
+                USART1_SendString("[EVENTLOG] backup ptr stale vs FLASH, fallback to scan\r\n");
+                s_count = 0;
+                goto full_scan;
+            }
+        }
         USART1_Printf("[EVENTLOG] ptr from backup SRAM: addr=%lu count=%u\r\n",
                       (unsigned long)s_write_addr, s_count);
         return 1;
     }
+
+full_scan:
 
     for (s = 0; s < EVENT_LOG_SECTOR_COUNT; s++)
     {
@@ -231,6 +304,20 @@ void EventLog_Add(uint8_t alert_type, const Sensor_Data_t *s, uint8_t mode)
 
     /* 16B 记录 16 对齐，永不跨 256B 页边界 */
     W25QXX_PageWrite(s_write_addr, rec, EVENT_REC_SIZE);
+
+    /* 写后读回校验：NOR 写失败是静默的，抓到现场才有证据（只报首次，防刷屏） */
+    {
+        uint8_t rb[EVENT_REC_SIZE];
+        static uint8_t s_verify_warned = 0;
+
+        W25QXX_Read(s_write_addr, rb, EVENT_REC_SIZE);
+        if (!s_verify_warned && memcmp(rec, rb, EVENT_REC_SIZE) != 0)
+        {
+            s_verify_warned = 1;
+            USART1_Printf("[EVENTLOG] WARN: write verify FAIL @%lu\r\n",
+                          (unsigned long)s_write_addr);
+        }
+    }
 
     s_write_addr += EVENT_REC_SIZE;
     if (s_write_addr >= EVENT_LOG_SECTOR_COUNT * EVENT_SEC_SIZE)

@@ -26,6 +26,12 @@
 void     W25QXX_Init(void);                 /* 初始化 SPI 引脚 */
 uint16_t W25QXX_ReadID(void);               /* 0x90：高字节=厂商(0xEF)，低字节=容量 ID */
 uint8_t  W25QXX_ReadSR(void);               /* 读状态寄存器 1（bit0=BUSY） */
+uint8_t  W25QXX_ReadSR2(void);              /* 0x35：读状态寄存器 2（CMP/QE/SRP1） */
+uint8_t  W25QXX_ReadSR3(void);              /* 0x15：读状态寄存器 3（bit2=WPS） */
+void     W25QXX_WriteSR1(uint8_t v);        /* 0x01：写 SR1（清 BP 块保护用） */
+void     W25QXX_WriteSR2(uint8_t v);        /* 0x31：写 SR2（清 CMP 互补保护用） */
+void     W25QXX_WriteSR3(uint8_t v);        /* 0x11：写 SR3（清 WPS 独立块锁模式用） */
+void     W25QXX_GlobalUnlock(void);         /* 0x98：全局解除独立块锁（WPS=1 时有效） */
 void     W25QXX_WaitBusy(void);             /* 等待擦写完成（有界 ~3s，含喂狗） */
 void     W25QXX_WriteEnable(void);          /* 写使能（每次擦/写前必须调用） */
 void     W25QXX_SectorErase(uint32_t addr); /* 擦除 addr 所在 4KB 扇区 */

@@ -9,10 +9,11 @@
  *    1. OV2640 摄像头初始化（QQVGA 160x120，省流量也够用）
  *    2. WiFi STA 模式连接路由器
  *    3. HTTP Server:
- *       GET /          → 首页（移动端可看实时视频）
- *       GET /stream    → MJPEG 实时视频流
- *       GET /shot.jpg  → 最新一张快照
- *       GET /snapshot  → 手动拍一张返回 JPEG
+ *       GET /            → 首页（移动端可看实时视频）
+ *       GET /stream      → MJPEG 实时视频流
+ *       GET /shot.jpg    → 最新一张抓拍（等价 ?i=0）
+ *       GET /shot.jpg?i=N→ 往前第 N 张抓拍（0=最新，最多 5；越界 404）
+ *       GET /snapshot    → 手动拍一张返回 JPEG
  *    4. 串口协议（115200, 8N1, Serial 0 → GPIO1/3）:
  *       STM32 → ESP32CAM: "STATUS\r\n"    → 回 "READY\r\n"
  *       STM32 → ESP32CAM: "CAPTURE\r\n"   → 拍照，回 "OK http://IP/shot.jpg\r\n"
@@ -62,8 +63,18 @@ IPAddress DNS     (192, 168, 137, 1);
 WebServer server(80);
 WiFiClient client = WiFiClient();
 
-/* ============ 全局快照（/shot.jpg 返回这张） ============ */
-camera_fb_t *g_last_snapshot = NULL;
+/* ============ 抓拍历史环（最近 6 张，JPEG 字节存 PSRAM） ============
+   只留最后一张的缺陷：入侵者走过传感器只需 1-2 秒，"最后一张"往往是
+   人离开后的空场景，真正拍到人的是中间某张。环形保留最近 6 张，
+   Web 端以胶片条展示。JPEG 字节拷出后 fb 立即归还，
+   环容量不受 camera fb_count=2 限制（6 张 × ~15KB ≈ 90KB，PSRAM 轻松放下） */
+#define SHOT_HISTORY 12   /* 4MB PSRAM：12 张 × ~15KB ≈ 180KB，余量充足 */
+uint8_t *g_shots[SHOT_HISTORY] = { NULL };
+size_t   g_shot_len[SHOT_HISTORY] = { 0 };
+uint32_t g_shot_seq[SHOT_HISTORY] = { 0 };  /* 每张的终身序号（URL 版本号） */
+int      g_shot_head = 0;    /* 下一张写入槽位 */
+int      g_shot_count = 0;   /* 有效张数（≤ SHOT_HISTORY） */
+uint32_t g_seq_next = 1;     /* 下一张照片的序号 */
 bool g_snapshot_busy = false;
 
 /* 已连接 IP 的缓存：拍照 URL 用它而不是实时 WiFi.localIP()，
@@ -86,12 +97,24 @@ bool captureSnapshot()
         return false;
     }
 
-    /* 释放上一张，替换为新的 */
-    if (g_last_snapshot) esp_camera_fb_return(g_last_snapshot);
-    g_last_snapshot = fb;
+    /* JPEG 字节拷入历史环（优先 PSRAM，失败退回 DRAM），随后归还 fb */
+    uint8_t *copy = (uint8_t *)ps_malloc(fb->len);
+    if (!copy) copy = (uint8_t *)malloc(fb->len);
+    if (copy) {
+        memcpy(copy, fb->buf, fb->len);
+        free(g_shots[g_shot_head]);
+        g_shots[g_shot_head] = copy;
+        g_shot_len[g_shot_head] = fb->len;
+        g_shot_seq[g_shot_head] = g_seq_next++;
+        g_shot_head = (g_shot_head + 1) % SHOT_HISTORY;
+        if (g_shot_count < SHOT_HISTORY) g_shot_count++;
+    } else {
+        Serial.println("ERR: no mem for shot history");
+    }
+    esp_camera_fb_return(fb);
 
     g_snapshot_busy = false;
-    return true;
+    return copy != NULL;
 }
 
 /* ================================================================
@@ -111,39 +134,57 @@ void handleIndex()
     server.send(200, "text/html; charset=utf-8", html);
 }
 
-/* 手动快照 */
+/* 查看抓拍历史（只读，不触发新拍照）：
+     ?s=N  → 按终身序号取（URL 不可变，配合 Cache-Control 长缓存，
+             浏览器只下载新照片，旧照片全部缓存命中——胶片条秒开的关键）
+     ?i=N  → 按相对位置取（0=最新，兼容旧链路；内容随环顺延变化，不适合缓存）
+     无参  → 最新一张 */
+void handleShotJpg()
+{
+    int slot = -1;
+
+    if (server.hasArg("s")) {
+        uint32_t want = (uint32_t)server.arg("s").toInt();
+        for (int k = 0; k < g_shot_count; k++) {
+            int sl = (g_shot_head - 1 - k + 2 * SHOT_HISTORY) % SHOT_HISTORY;
+            if (g_shot_seq[sl] == want) { slot = sl; break; }
+        }
+    } else {
+        int idx = server.hasArg("i") ? server.arg("i").toInt() : 0;
+        if (idx >= 0 && idx < g_shot_count) {
+            slot = (g_shot_head - 1 - idx + 2 * SHOT_HISTORY) % SHOT_HISTORY;
+        }
+    }
+
+    if (slot < 0) {
+        server.send(404, "text/plain", "NO_SUCH_SHOT");
+        return;
+    }
+
+    NetworkClient client = server.client();
+    if (!client) return;
+    client.write("HTTP/1.1 200 OK\r\n");
+    client.write("Content-Type: image/jpeg\r\n");
+    client.write("Access-Control-Allow-Origin: *\r\n");
+    /* URL 自带按槽位的版本号（?i=N&t=该张抓拍时刻），内容不变 URL 不变，
+       放心长缓存：网页 13 张图只有最新一张在新抓拍后重下，
+       其余 12 张全部浏览器缓存秒开（胶片条卡顿的主因就是没有缓存头） */
+    client.write("Cache-Control: max-age=3600\r\n");
+    client.write("Content-Length: ");
+    client.write(String(g_shot_len[slot]).c_str());
+    client.write("\r\nConnection: close\r\n\r\n");
+    client.write((const char *)g_shots[slot], g_shot_len[slot]);
+}
+
+/* 手动快照：拍一张新的，返回最新那张（复用历史环读取） */
 void handleSnapshot()
 {
     captureSnapshot();
-    if (g_last_snapshot) {
-        NetworkClient client = server.client();
-        if (!client) return;
-        client.write("HTTP/1.1 200 OK\r\n");
-        client.write("Content-Type: image/jpeg\r\n");
-        client.write("Content-Length: ");
-        client.write(String(g_last_snapshot->len).c_str());
-        client.write("\r\nConnection: close\r\n\r\n");
-        client.write((const char *)g_last_snapshot->buf, g_last_snapshot->len);
-    } else {
+    if (g_shot_count == 0) {
         server.send(500, "text/plain", "NO_DATA");
+        return;
     }
-}
-
-/* 查看全局快照（只读，不触发新拍照） */
-void handleShotJpg()
-{
-    if (g_last_snapshot) {
-        NetworkClient client = server.client();
-        if (!client) return;
-        client.write("HTTP/1.1 200 OK\r\n");
-        client.write("Content-Type: image/jpeg\r\n");
-        client.write("Content-Length: ");
-        client.write(String(g_last_snapshot->len).c_str());
-        client.write("\r\nConnection: close\r\n\r\n");
-        client.write((const char *)g_last_snapshot->buf, g_last_snapshot->len);
-    } else {
-        server.send(503, "text/plain", "NO_SNAPSHOT_YET");
-    }
+    handleShotJpg();
 }
 
 /* MJPEG 实时流 */
@@ -157,7 +198,7 @@ void handleStream()
     client.write("Cache-Control: no-cache\r\nConnection: close\r\n\r\n");
 
     unsigned long start = millis();
-    while (client.connected() && (millis() - start < 30000)) {  /* 最长 30s */
+    while (client.connected() && (millis() - start < 300000)) {  /* 最长 300s */
         camera_fb_t *fb = esp_camera_fb_get();
         if (!fb) break;
 
@@ -166,8 +207,18 @@ void handleStream()
         client.write("Content-Length: ");
         client.write(String(fb->len).c_str());
         client.write("\r\n\r\n");
-        client.write((const char *)fb->buf, fb->len);
+        size_t w = client.write((const char *)fb->buf, fb->len);
         esp_camera_fb_return(fb);
+        /* 网页切走/关闭标签后 TCP 断开，client.connected() 感知很慢
+           （LWIP 要等 FIN 处理），但 write 会立刻失败——靠返回值在
+           ~100ms 内退出流循环，释放单客户端服务器，否则 /shot.jpg
+           请求全被排队（大图卡在最后一帧、缩略图全空白的根因） */
+        if (w != fb->len) break;
+
+        /* 流式循环会独占 loop()：必须在帧间隙处理 STM32 串口命令，
+           否则直播期间 CAPTURE/STATUS 被卡住直到流结束 */
+        handleSerialCmd();
+
         delay(50);
     }
 }
@@ -196,9 +247,11 @@ void handleSerialCmd()
             Serial.println("READY");
         } else if (cmd_buf == "CAPTURE") {
             if (captureSnapshot()) {
+                /* URL 带终身序号：网页据此推算历史环中每张照片的不可变 URL */
                 Serial.print("OK http://");
                 Serial.print(g_ip_str.length() ? g_ip_str : WiFi.localIP().toString());
-                Serial.println("/shot.jpg");
+                Serial.print("/shot.jpg?s=");
+                Serial.println(g_seq_next - 1);
             } else {
                 Serial.println("BUSY");
             }
@@ -223,6 +276,7 @@ void setup()
     Serial.begin(115200);
     delay(100);
     Serial.println("\r\n=== ESP32-CAM Booting ===");
+    Serial.println("[CAM] fw=20260921c (seq+cache+fast-stream-exit)");  /* 版本标记 */
 
     /* ---- 1. 摄像头初始化 ---- */
     camera_config_t config = {
@@ -299,6 +353,9 @@ void setup()
     Serial.println("[HTTP] server started on :80");
 
     /* ---- 4. 拍一张初始快照 ---- */
+    /* 序号随机起点：防止 CAM 重启后 seq 从 1 重复，浏览器缓存里的
+       旧 URL(?s=3) 命中新照片（缓存污染） */
+    g_seq_next = (esp_random() % 1000000UL) + 1;
     captureSnapshot();
     Serial.println("[CAM] ready, waiting for STM32 commands...\r\n");
     Serial.println("READY");  /* 告诉 STM32 我们 ready 了 */
