@@ -93,6 +93,18 @@ oled_dashboard.jpg
 oled_layout.jpg
 oled_minimal.jpg
 
+# 项目诊断报告是文档而非构建产物，保留入库（Keil 生成的 .html 仍忽略）
+!docs/SmartGuard_代码诊断与优化方案.html
+
+# ESP32-CAM 参考固件含真实 WiFi 明文凭据，不进入公开仓库
+docs/参考资料/ESP32_CAM_Firmware/
+
+# 厂商模板副本（含 Object 编译产物），不参与本项目
+docs/参考资料/Template/
+
+# 一次性硬件探测产物
+mq2_probe.txt
+
 # 一次性调试产物
 User/build_result.txt
 User/build_check.txt

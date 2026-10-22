@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SmartGuard 代码诊断与优化方案</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Segoe UI','PingFang SC','Microsoft YaHei',Arial,sans-serif; background:#F4F3EE; color:#1A1B1C; line-height:1.65; }
+  .wrap { max-width:980px; margin:0 auto; padding:32px 20px 64px; }
+  header.hero { background:linear-gradient(135deg,#1e293b,#334155); color:#f1f5f9; border-radius:16px; padding:28px 28px 24px; margin-bottom:24px; }
+  header.hero h1 { font-size:24px; margin-bottom:6px; }
+  header.hero .sub { color:#cbd5e1; font-size:13.5px; }
+  .stat-row { display:flex; flex-wrap:wrap; gap:12px; margin-top:20px; }
+  .stat { flex:1 1 130px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.12); border-radius:12px; padding:12px 14px; }
+  .stat .n { font-size:26px; font-weight:700; }
+  .stat .l { font-size:12px; color:#cbd5e1; margin-top:2px; }
+  .n-p0{color:#fca5a5;} .n-p1{color:#fcd34d;} .n-p2{color:#93c5fd;} .n-p3{color:#cbd5e1;}
+  h2.sec { font-size:19px; margin:32px 0 12px; padding-left:12px; border-left:5px solid #334155; }
+  .lead { background:#fff; border:1px solid #E4E3DD; border-radius:12px; padding:16px 18px; font-size:14px; margin-bottom:16px; }
+  .issue { background:#fff; border:1px solid #E4E3DD; border-radius:12px; padding:16px 18px; margin-bottom:14px; }
+  .issue.p0 { border-left:5px solid #EA6668; }
+  .issue.p1 { border-left:5px solid #FAAD14; }
+  .issue.p2 { border-left:5px solid #5B8DEF; }
+  .issue.p3 { border-left:5px solid #94a3b8; }
+  .issue h3 { font-size:15.5px; margin-bottom:6px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .tag { font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; color:#fff; white-space:nowrap; }
+  .tag.p0{background:#EA6668;} .tag.p1{background:#FAAD14;} .tag.p2{background:#5B8DEF;} .tag.p3{background:#94a3b8;}
+  .loc { font-family:Consolas,'Courier New',monospace; font-size:12px; color:#5B8DEF; background:#eff4ff; padding:1px 6px; border-radius:5px; }
+  .issue p { font-size:13.5px; margin:6px 0; }
+  .issue .why { color:#6B7280; font-size:13px; }
+  pre { background:#0f172a; color:#e2e8f0; border-radius:10px; padding:12px 14px; font-size:12.5px; line-height:1.55; overflow-x:auto; margin:8px 0 4px; font-family:Consolas,'Courier New',monospace; }
+  pre .cmt{color:#7dd3a0;} pre .bad{color:#fca5a5;} pre .good{color:#93c5fd;}
+  table { width:100%; border-collapse:collapse; background:#fff; border-radius:12px; overflow:hidden; font-size:13.5px; margin:10px 0; }
+  th,td { border:1px solid #E4E3DD; padding:9px 12px; text-align:left; vertical-align:top; }
+  th { background:#f1f5f9; font-weight:600; white-space:nowrap; }
+  .phase { background:#fff; border:1px solid #E4E3DD; border-radius:12px; padding:14px 18px; margin-bottom:12px; display:flex; gap:14px; align-items:flex-start; flex-wrap:wrap; }
+  .phase .step { flex:0 0 64px; height:64px; border-radius:50%; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:13px; line-height:1.2; text-align:center; }
+  .phase .body { flex:1 1 300px; min-width:0; }
+  .phase h4 { font-size:15px; margin-bottom:4px; }
+  .phase ul { margin-left:18px; font-size:13.5px; }
+  .bg0{background:#EA6668;} .bg1{background:#FAAD14;} .bg2{background:#5B8DEF;} .bg3{background:#64748b;} .bg4{background:#52C41A;}
+  .note { font-size:12.5px; color:#6B7280; margin-top:8px; }
+  .ok { color:#16a34a; font-weight:600; }
+  .bad2 { color:#dc2626; font-weight:600; }
+  footer { margin-top:36px; font-size:12.5px; color:#6B7280; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>SmartGuard · 代码诊断与优化方案</h1>
+  <div class="sub">STM32F407ZE 智能空间守护 Agent ｜ 基于全部 Hardware/User/v1_train 源码逐文件审查 ｜ 2026-09-03</div>
+  <div class="stat-row">
+    <div class="stat"><div class="n n-p0">5</div><div class="l">P0 阻断级（功能跑不通）</div></div>
+    <div class="stat"><div class="n n-p1">12</div><div class="l">P1 可靠性 / 正确性</div></div>
+    <div class="stat"><div class="n n-p2">7</div><div class="l">P2 架构 / 产品化</div></div>
+    <div class="stat"><div class="n n-p3">5</div><div class="l">P3 工程卫生</div></div>
+  </div>
+</header>
+
+<div class="lead">
+  <strong>一句话结论：</strong>当前烧录的 <code>main.c</code> 是一个 OLED 调试程序（死循环不返回），README 描述的 v0.6 业务闭环（采集→自适应阈值→决策→UDP 推送）<span class="bad2">当前根本没有运行</span>；同时 MQ-2 火灾链路全程断开、TinyML 用缺传感器的数据训练、OLED 存在三套互相矛盾的引脚定义。<strong>建议先做 P0 恢复（约半天），再按 P1→P2 推进。</strong>
+</div>
+
+<h2 class="sec">P0 · 阻断级问题（不修，产品功能不成立）</h2>
+
+<div class="issue p0">
+  <h3><span class="tag p0">P0-1</span> main.c 是 OLED 测试死循环，业务代码全部不可达</h3>
+  <span class="loc">User/main.c:163-212</span>
+  <p><code>OLED_DirectTest()</code> 内部 <code>while(1)</code> 闪烁永不返回，其后的 <code>SensorHub_Init / DecisionEngine_Init / AT_Init / AT_LearnBaseline</code> 以及主循环全部是死代码。也就是说现在板子上电只会闪屏，不会采集、不会决策、不会联网告警。</p>
+  <p class="why">修复：用备份里的业务骨架重写 main（v02.bak 也不是最新版，缺 AT 学习和键盘切模式），正确顺序应为：硬件初始化 → 可选外设（条件编译）→ SensorHub/Decision/AT 初始化 → 非阻塞式基线学习 → 主循环（键盘扫描/采集/AT_Update/决策/OLED 刷新/喂狗）。</p>
+</div>
+
+<div class="issue p0">
+  <h3><span class="tag p0">P0-2</span> MQ-2 火灾检测链路全程断开，CheckFire 是死代码</h3>
+  <span class="loc">sensor_hub.c:71 ｜ adc.c:126-131 ｜ decision_engine.c:167</span>
+  <p>采集被注释 <code>// s_sensor_data.mq2_adc = ADC_ReadMQ2();</code>，而 <code>ADC_ReadMQ2()</code> 本身直接 <code>return 0</code>，于是 <code>mq2_adc</code> 恒为 0；CheckFire 第一行 <code>if (mq2_adc==0 …) return ALERT_NONE</code> 永远提前返回，<strong>火灾永远不可能告警</strong>，AT 学到的烟雾基线也恒为 0。</p>
+  <pre><span class="cmt">// adc.c —— 硬件到位后：① GPIO 初始化 PA6 模拟输入 ② 打开下面这行</span>
+uint16_t ADC_ReadMQ2(void) {
+<span class="good">    return ADC_ReadChannel(MQ2_ADC, MQ2_ADC_CHANNEL);   // PA6 / ADC1_IN6</span>
+}
+<span class="cmt">// sensor_hub.c SensorHub_Update() 内：</span>
+<span class="good">    s_sensor_data.mq2_adc = ADC_ReadMQ2();</span></pre>
+  <p class="why">注意 MQ-2 半导体探头需要预热（数据手册通常建议数分钟），上电 20s 就学基线会把预热漂移学进去，基线学习应跳过或延后 MQ-2 通道。</p>
+</div>
+
+<div class="issue p0">
+  <h3><span class="tag p0">P0-3</span> OLED 三套引脚 / 三套驱动互相矛盾</h3>
+  <span class="loc">main.c:42-45 ｜ oled.c:7-8,146 ｜ README ｜ oled_SPI_from_STM32F1.c</span>
+  <table>
+    <tr><th>来源</th><th>CLK</th><th>MOSI</th><th>DC</th><th>CS</th></tr>
+    <tr><td>main.c 内联测试</td><td>PB0</td><td>PF11</td><td>PB1</td><td>PC13</td></tr>
+    <tr><td>oled.c 正式驱动</td><td>PB3</td><td>PB5</td><td>PB1</td><td>PB9</td></tr>
+    <tr><td>README 文档</td><td>PB13</td><td>PB15</td><td>PB14</td><td>PB12</td></tr>
+  </table>
+  <p>同时 <code>USE_OLED=1</code> 但业务代码从未调用 <code>OLED_Init()</code> 和已经写好的 <code>OLED_ShowHomeScreen()</code>；目录里还残留 F1 移植文件 <code>oled_SPI_from_STM32F1.c</code>。必须按实际接线<strong>选定一套</strong>，删除 main.c 内联测试代码和 F1 残留，主循环统一调 oled.c 接口刷新。</p>
+</div>
+
+<div class="issue p0">
+  <h3><span class="tag p0">P0-4</span> TinyML 模型在“缺 MQ-2”的数据集上训练，却默认启用</h3>
+  <span class="loc">v1_train/training_report.txt ｜ scaler_params.h ｜ decision_engine.h:11</span>
+  <p>485 个样本中 mq2 / mq2_dev 两维恒为 0（mean=0，sklearn 把 0 方差替换成 std=1），模型从未见过烟雾特征；而 temp_dev 的 std=0.0957、humi 相关维度方差极小，实测温湿度稍偏，标准化后被放大几十倍，<strong>边界地带 40–80cm 的入侵判断极易误报</strong>。报告指标 Recall=1.0 也说明模型偏向“一律报异常”。</p>
+  <p class="why">修复：MQ-2 接通后重新采数、重训并重新导出两个 .h；在此之前把 <code>USE_ML</code> 置 0，纯规则运行，避免残模型参与决策。另外推理头文件在 Hardware/ML 与 v1_train 各存一份，必须只保留一份，防止改漏。</p>
+</div>
+
+<div class="issue p0">
+  <h3><span class="tag p0">P0-5</span> 光敏“数值越大越亮/越暗”三处注释互相矛盾，自动照明方向存疑</h3>
+  <span class="loc">README 硬件表 ｜ adc.c:114 ｜ sensor_hub.h:7 ｜ decision_engine.c:188-192</span>
+  <p>README 写“光照越强值越大”，adc.c 与 sensor_hub.h 写“光照越强值越小”。而 <code>AutoLighting</code> 直接用 <code>light_adc × PERIOD/4095</code> 当占空比（PWM 还是低电平点亮、极性 Low）：方向一旦搞反就是“白天灯最亮、夜里熄灭”。需用万用表/串口实测一组明/暗 ADC 值确定方向，再决定是否取反（<code>4095-light_adc</code>），并统一三处注释。</p>
+</div>
+
+<h2 class="sec">P1 · 可靠性与正确性问题</h2>
+
+<div class="issue p1">
+  <h3><span class="tag p1">P1-1</span> 全阻塞超级循环，任一慢操作卡死全系统</h3>
+  <span class="loc">adaptive_threshold.c:91 ｜ hcsr04.c:75-97 ｜ dht11.c:64 ｜ esp8266.c:86 ｜ matrix_key.c:129</span>
+  <p>阻塞点清单：基线学习 delay 20s；HC-SR04 忙等最长 60ms；DHT11 起始信号 20ms；ESP8266 连 WiFi 单次等待 15s；<strong>Key_Scan 松手等待 <code>while(…);</code> 无超时</strong>，按住键或行列短路时整机死锁；ADC 等 EOC（adc.c:97）、USART 等 TXE 也都是无超时 while。</p>
+  <p class="why">短期：所有 while 加超时计数并返回错误码；Key_Scan 改“按下沿触发 + 状态机消抖”，删掉松手死等和硬编码 16800 空循环延时（用 g_tick/delay 模块）。中期：上 FreeRTOS 或时间片调度（见 P2）。</p>
+</div>
+
+<div class="issue p1">
+  <h3><span class="tag p1">P1-2</span> 没有看门狗，Fault 处理是空死循环</h3>
+  <span class="loc">stm32f4xx_it.c:67-112 ｜ 全工程无 IWDG</span>
+  <p>安防设备死在任何阻塞 while 或跑飞进 HardFault 后永久失效，且没有任何现场信息。建议：① 启用 IWDG（如 1s），主循环喂狗，阻塞操作分段喂狗；② HardFault_Handler 里读取堆叠的 PC/LR/CFSR 通过 USART1 打印后再复位（NVIC_SystemReset），便于定位。</p>
+</div>
+
+<div class="issue p1">
+  <h3><span class="tag p1">P1-3</span> ESP8266 下行解析状态机遇逗号即归零，远程控制永远收不到</h3>
+  <span class="loc">esp8266.c:235-249</span>
+  <p>固件实际下发的是 <code>+IPD,&lt;len&gt;:&lt;data&gt;</code>（多连接时为 <code>+IPD,0,&lt;len&gt;:</code>）。状态 4 只接受数字和冒号，遇到逗号立刻 state=0，因此一帧都解析不出来。需要兼容“逗号 + 可选连接号 + 逗号”的语法，再解析长度与冒号。</p>
+</div>
+
+<div class="issue p1">
+  <h3><span class="tag p1">P1-4</span> DHT11 失败恢复逻辑会误覆盖真实 0 值，且依赖浮点相等比较</span></h3>
+  <span class="loc">sensor_hub.c:57-66 ｜ dht11.c:163-167</span>
+  <p>DHT11_Read_Data 失败时先把输出写成 0.0，上层再用 <code>== 0.0f</code> 判断并恢复默认值——真实 0°C/0%RH 会被误改，且“靠输出值反推失败”本身不可靠。正确做法：<strong>失败时函数不要触碰输出参数</strong>，上层保留上一次有效值即可。</p>
+  <pre><span class="cmt">// dht11.c：失败直接 return，不写 *temperature / *humidity</span>
+if (ret != 0) return 1;
+*humidity = (float)data[0];
+*temperature = (float)data[2];</pre>
+</div>
+
+<div class="issue p1">
+  <h3><span class="tag p1">P1-5</span> HC-SR04 整数除法丢精度，且实现与 README 描述不符</h3>
+  <span class="loc">hcsr04.c:111 ｜ README“PC6 中断测 Echo”</span>
+  <p><code>(float)(time_us / 58)</code> 先做 uint32 整除再转浮点，距离分辨率只有 1cm；应为 <code>time_us / 58.0f</code>（精确系数 58.02）。另外 README 声称 Echo 用定时器输入捕获/中断测量，实际是 delay_us 忙等轮询，文档需与实现统一（建议改 TIM 输入捕获，彻底不阻塞 CPU）。</p>
+</div>
+
+<div class="issue p1">
+  <h3><span class="tag p1">P1-6</span> 告警“一次命中即触发”，缺少连续确认，超声波尖峰会误报</h3>
+  <span class="loc">decision_engine.c CheckIntrusion</span>
+  <p>建议加滑动确认窗：连续 3 次采样（1.5s）中 ≥2 次命中才置告警，恢复也要求连续 N 次正常，可显著抑制瞬时噪声并避免蜂鸣器/网络抖动。</p>
+</div>
+
+<div class="issue p1">
+  <h3><span class="tag p1">P1-7</span> 阈值参数三处不一致，硬编码散落</h3>
+  <span class="loc">adaptive_threshold.h:29-31 ｜ decision_engine.c:40-42,154 ｜ README</span>
+  <table>
+    <tr><th>参数</th><th>头文件</th><th>decision_engine</th><th>README</th></tr>
+    <tr><td>EWMA α</td><td>0.01</td><td>—</td><td>0.1</td></tr>
+    <tr><td>距离突变</td><td>30cm</td><td>20cm（另硬编码 80/30）</td><td>15cm</td></tr>
+    <tr><td>σ 系数 K</td><td>int 3</td><td>—</td><td>3.0f</td></tr>
+  </table>
+  <p>所有阈值集中到 adaptive_threshold.h，用 <code>3.0f</code> 浮点字面量；decision_engine 不再自定义第二套 40/80/20，避免两条入侵规则边界重叠、绕来绕去。</p>
+</div>
+
+<div class="issue p1">
+  <h3><span class="tag p1">P1-8</span> mq2_sigma=0 时 EWMA 永久冻结</h3>
+  <span class="loc">adaptive_threshold.c:149-152</span>
+  <p>条件 <code>fabsf(diff) &lt; 2.0f*sigma</code>，当 sigma=0（当前必然，因为 MQ-2 恒 0）时恒为假，EWMA 与阈值永不更新。需要对 sigma 设下限（如 <code>max(sigma, 1.0f)</code>），并在 MQ-2 未接入时直接跳过该通道更新。</p>
+</div>
+
+<div class="issue p1">
+  <h3><span class="tag p1">P1-9</span> 编译警告未清零，且有乱码字节进了源码</h3>
+  <span class="loc">build_log.txt ｜ decision_engine.c:124（#870-D 非法多字节序列）</span>
+  <p>当前 0 Error 但 2 Warning：未使用变量 <code>buf[32]</code>；“入侵告警！距离”处有损坏字节。按项目约定全部源码统一 UTF-8 with BOM，删未用变量，做到 0 Warning——警告是面试时被翻代码的第一扣分项。</p>
+</div>
+
+<div class="issue p1">
+  <h3><span class="tag p1">P1-10</span> WiFi 凭据明文硬编码进固件</h3>
+  <span class="loc">esp8266.h:24-25</span>
+  <p>SSID/密码随源码分发即泄露。抽到独立 <code>wifi_config.h.example</code>（真实文件不入库），或后续用矩阵键盘 + Flash 实现首次配网；同时建议工程根目录补 <code>.gitignore</code>（Object/、*.bak、JLinkLog.txt、__pycache__/）。</p>
+</div>
+
+<div class="issue p1">
+  <h3><span class="tag p1">P1-11</span> UDP 告警“发了就算成功”，可能静默丢失</h3>
+  <span class="loc">esp8266.c:170-171,179-196</span>
+  <p>CIPSTART 失败被硬编码 <code>return 1</code>；CIPSEND 发完数据不等 <code>SEND OK</code>；告警帧没有序号、时间戳、设备 ID，丢包后上位机无感知。建议：等待发送结果应答、JSON 加 <code>seq/ts/device</code>、关键告警应用层重发 2–3 次（间隔由现有冷却机制控制）。</p>
+</div>
+
+<div class="issue p1">
+  <h3><span class="tag p1">P1-12</span> 三个串口的 Printf 共用同一个 static 缓冲区，不可重入</h3>
+  <span class="loc">usart.c:33</span>
+  <p>USART1/USART2_Printf 共用 <code>printf_buf[128]</code>，一旦在中断或嵌套场景调用会互相踩内存。改为每个串口独立缓冲，或统一一个带互斥保护的格式化函数；长中文日志注意 128 字节截断。</p>
+</div>
+
+<h2 class="sec">P2 · 架构升级与产品化</h2>
+
+<table>
+  <tr><th>#</th><th>方向</th><th>具体做法与价值</th></tr>
+  <tr><td>P2-1</td><td>FreeRTOS 多任务</td><td>采样任务（500ms）、决策任务、通信任务、UI 任务分离，队列传递 Sensor_Data_t；ESP 连网/AT 阻塞不再卡采集与按键。README 路线图已规划，这是面试最大的架构加分项。</td></tr>
+  <tr><td>P2-2</td><td>掉电存储</td><td>当前模式/基线/阈值重启全丢、每次上电学 20s。不必等 W25Q128，先用 STM32F407 内部 Flash 最后一页存结构体（CRC 校验），上电直接恢复。</td></tr>
+  <tr><td>P2-3</td><td>传感器自检</td><td>HC-SR04 连续 N 次 err 应上报告警“传感器离线”而不是静默；DHT11 连续失败计数；MQ-2 预热状态机。安防产品“故障安全 fail-safe”是必答题。</td></tr>
+  <tr><td>P2-4</td><td>模式语义补全</td><td>SLEEP 当前与 AWAY 完全相同：应关自动照明/降亮度；利用现成 4×4 键盘做“撤防密码”，输错触发告警。</td></tr>
+  <tr><td>P2-5</td><td>告警分级声响</td><td>Beep_PlayNote/SetFreq 已实现却没用：入侵急促间歇、火灾连续双音，OLED 同步显示（OLED_ShowHomeScreen 已写好，主循环没接）。</td></tr>
+  <tr><td>P2-6</td><td>实时数据上屏</td><td>ESP8266_SendData 已写但主循环没调用；Dashboard 目前只有告警，增加 2s 一次的传感器数据流，形成“实时监控 + 告警”双面板。</td></tr>
+  <tr><td>P2-7</td><td>分层解耦</td><td>sensor_hub.c（下层）#include 了 decision_engine.h（上层），反向依赖应删除；SERVO 空实现、RTC（#if 0，Wakeup bug）决定补全或移除。</td></tr>
+</table>
+
+<h2 class="sec">P3 · 工程卫生</h2>
+<div class="issue p3">
+  <h3><span class="tag p3">P3</span> 清理冗余、统一唯一数据源</h3>
+  <p style="margin-top:6px;">删除/归档：<code>User/main.c.v02.bak</code>、<code>Template.uvoptx.bak</code>、<code>Hardware/OLED/oled_SPI_from_STM32F1.c</code>、空文件 <code>User/build_log.txt</code>、85KB 的 <code>JLinkLog.txt</code>、整个 <code>Object/</code> 编译产物、<code>v1_train/__pycache__</code>；<code>v1_train/ml_inference.h、scaler_params.h</code> 与 <code>Hardware/ML/</code> 重复，保留部署侧一份、训练侧只负责导出。上位机 web_dashboard.ps1 的 Start-Job“读全文件→改→写全文件”与 HTTP 单线程存在读写竞态，建议改进程内队列 + 锁，或直接用已有的 udp_receiver.py 统一技术栈。</p>
+</div>
+
+<h2 class="sec">推荐落地路线（单人课余节奏）</h2>
+
+<div class="phase"><div class="step bg0">阶段1<br>半天</div><div class="body">
+  <h4>P0 功能恢复 —— 先让 v0.6 闭环真正跑起来</h4>
+  <ul>
+    <li>重写业务版 main.c（移除 OLED 死循环），主循环串起键盘/采集/AT/决策/OLED</li>
+    <li>按实际接线三选一定稿 OLED 引脚，删掉另两套；主循环接 OLED_ShowHomeScreen</li>
+    <li>接通 MQ-2 ADC 链路（或在未到货前显式 USE_MQ2=0 并禁用火灾分支）</li>
+    <li>USE_ML 先置 0；实测并统一光敏方向；清零全部编译警告</li>
+  </ul>
+</div></div>
+
+<div class="phase"><div class="step bg1">阶段2<br>1-2天</div><div class="body">
+  <h4>P1 兜底加固 —— 不死机、不误报、不丢告警</h4>
+  <ul>
+    <li>所有阻塞 while 加超时；键盘改状态机；IWDG + HardFault 打印复位</li>
+    <li>修 +IPD 解析、DHT11 失败保留旧值、HCSR04 浮点除法、EWMA sigma 下限</li>
+    <li>阈值参数收敛到头文件；入侵检测加连续确认窗</li>
+  </ul>
+</div></div>
+
+<div class="phase"><div class="step bg2">阶段3<br>2-3天</div><div class="body">
+  <h4>P1 通信可靠化 + 数据闭环</h4>
+  <ul>
+    <li>凭据外置；告警帧加 seq/ts/device，等 SEND OK + 应用层重发</li>
+    <li>Dashboard 接实时数据流；MQ-2 到货后重新采数、重训 MLP 再开 USE_ML</li>
+  </ul>
+</div></div>
+
+<div class="phase"><div class="step bg3">阶段4<br>约1周</div><div class="body">
+  <h4>P2 架构升级（简历/答辩核心亮点）</h4>
+  <ul>
+    <li>FreeRTOS：采样/决策/通信/UI 任务 + 队列；内部 Flash 存基线与模式</li>
+    <li>传感器离线自检、SLEEP 语义、键盘密码撤防、分级告警音</li>
+  </ul>
+</div></div>
+
+<div class="phase"><div class="step bg4">阶段5<br>选做</div><div class="body">
+  <h4>扩展：MQTT 上云 / 舵机云台 / OV7670 帧差 / CMSIS-NN</h4>
+  <ul><li>沿用 README 既有路线图，在稳固的任务化底座上逐项叠加。</li></ul>
+</div></div>
+
+<div class="lead" style="margin-top:20px;">
+  <strong>面试叙事建议：</strong>这套优化本身就是好素材——“发现演示版 main 覆盖了业务主循环 → 建立 P0-P3 分级审查 → 用看门狗/超时/连续确认把裸机系统做成 fail-safe → 再用 FreeRTOS 把阻塞式超级循环重构为任务化架构”，比单纯堆传感器更能体现工程能力。
+</div>
+
+<footer>SmartGuard 源码静态审查报告 · 问题均可在标注文件行号处复核 · 未修改任何源码</footer>
+</div>
+</body>
+</html>

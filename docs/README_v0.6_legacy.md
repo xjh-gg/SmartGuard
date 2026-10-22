@@ -724,7 +724,7 @@ BOOT OK  Mode: HOME
 netsh advfirewall firewall add rule name="SmartGuard UDP 12345" dir=in action=allow protocol=UDP localport=12345
 
 # 2. 启动 Dashboard
-cd "d:\Projects\cq2610\CQ2610\08智能硬件开发\01STM32单片机\SmartGuard"
+cd "<仓库根目录>\SmartGuard"
 powershell -ExecutionPolicy Bypass -File web_dashboard.ps1
 
 # 3. 浏览器打开

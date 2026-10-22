@@ -1,250 +1,396 @@
 # SmartGuard · 智能空间守护系统
 
-> STM32F407ZE 裸机 + 6 路传感器 + 端侧自适应阈值 + 手写 MQTT 上云的空间守护原型
+> **STM32F407ZE + FreeRTOS V10.5.1** 的多传感器空间守护系统：端侧学习环境基线，本地完成入侵 / 火灾 / 防拆判定，ESP32-CAM 抓拍取证，手写 MQTT 上云，Vue 3 看板远程监控。
 
-- **一句话**：设备自己学出"这个房间正常是什么样"，只在统计显著偏离时告警，本地蜂鸣/显示的同时把状态推上云。
-- **不做**：不依赖云端推理、不跑 RTOS（协作式任务调度器）。
-- **芯片**：STM32F407ZE（Cortex-M4 · 168 MHz · 192 KB RAM · 1 MB Flash）
-- **构建**：Keil MDK v5 + J-Link，当前 `0 Error(s), 0 Warning(s)`
-- **配套**：支持 MQTT 双向通信 + Web 前端（Vue 3）实时监控面板
-
-## 项目背景
-
-常见的门禁/烟雾报警器有三个通病：**阈值写死**（换个房间就得重调）、**误报多**（一片阴影扫过就响）、**断网即失效**。SmartGuard 想验证的做法是把决策留在端侧——先学环境基线，只在显著偏离时告警，网络只负责通知。
-
-第二个目的是工程训练：手写 MQTT 3.1.1 报文而不是接 SDK，用板载 EEPROM/SPI Flash 手写存储层（环形日志、撕裂校验）而不是接现成文件系统，把每一类编译警告归零。这些"重复造轮子"的部分，恰好是项目里最值得讲的部分。
-
-## 系统架构
-
-```
-感知层   光敏 PF7 · MQ-2 PA4 · DHT11 PG9 · HC-SR04 PC8/PC6 · MPU6050 PB8/PB9
-           ↓ SensorHub_Update()，统一聚合为 Sensor_Data_t
-决策层   adaptive_threshold  20s 基线 + σ 带 + EWMA 慢跟随
-         decision_engine     HOME/AWAY/SLEEP 模式机 + 连续确认窗 + 告警冷却
-         ml_inference        MLP 10→16→8→1，边界地带辅助二分类
-           ↓ Alert_Type_t
-执行层   蜂鸣 PF8 · OLED 本地面板 · LED · USART1 日志(115200)
-           ↓
-通信层   ESP8266(USART3 PB10/PB11) —AT/TCP→ 手写 MQTT 3.1.1 → mosquitto
-持久层   AT24C02 配置掉电恢复（magic+CRC32）· W25Qxx 告警事件环形日志 · VBAT 备份域 RTC
-守护层   IWDG 2s 独立看门狗 · RTC 唤醒 · NTP 对时
-```
-
-## 硬件清单
-
-| 模块 | 引脚 | 接口 | 状态 |
-|---|---|---|---|
-| SSD1306 0.96" OLED | SCLK PB0 / DC PB1 / MOSI PF11 / CS PC13 | 软件 SPI | ✅ 英文界面 |
-| DHT11 温湿度 | PG9 | 单总线 | ✅ 2s 节流 |
-| MQ-2 烟雾 | PA4 / ADC1_IN4 | ADC | ✅ VCC 5V，安静环境基线 ~180 |
-| 光敏电阻 | PF7 / ADC3_IN5 | ADC | ✅ 光越强 ADC 越小 |
-| HC-SR04 测距 | TRIG PC8 / ECHO PC6 | TIM8 输入捕获 | ✅ 30ms 超时返回 0 |
-| MPU6050 | SCL PB8 / SDA PB9 | 软件 I2C | ✅ 防拆/震动 |
-| AT24C02 EEPROM 256B | PB8/PB9（与 MPU6050 同总线，0x50） | 软件 I2C | ✅ 配置掉电存储 |
-| W25Qxx SPI Flash | CS PB14 / SCK PB3 / MISO PB4 / MOSI PB5 | 软件 SPI | ✅ 告警事件日志（16KB/1024 条） |
-| ESP8266 ESP-12F | TX PB10 / RX PB11 | USART3 AT | ✅ MQTT 打通 |
-| 板载按键 S1~S4 | PA0 / PE2 / PE3 / PE4 | GPIO 轮询 + 内部上拉 | ✅ 四键全部**低电平有效**（含 PA0，实测为准；课程模板注释称 WK_UP 高有效，与本板不符） |
-| 无源蜂鸣器 | PF8 | TIM13_CH1 PWM | ✅ 分级告警音（入侵三连音/火灾双音/防拆长音） |
-| 板载 LED D0~D3 | PF9 / PF10 / PE13 / PE14 | GPIO | ⚠️ 驱动编号与宏名错位，见表下注 |
-| ESP32-CAM | USART2 PA2/PA3 + 独立 5V 供电 | 串口指令 + HTTP | ✅ 告警抓拍 + 12 张历史环（seq 序号）+ MJPEG 实时流 |
-| SG90 舵机 | — | — | ❌ 驱动为空桩 |
-| 4×4 矩阵键盘 | COL2 = PA4 | GPIO | ❌ 弃用（与 MQ-2 抢 PA4） |
-
-> **LED 编号错位（踩过坑）**：`led.c` 的 switch case 是 **1-based**，`led.h` 的宏是 **0-based**，
-> 于是 `LED_ON(1)`=PF9、`(2)`=PF10、`(3)`=PE13、`(4)`=PE14，而 `LED_ON(0)` 落 `default: break` 是空操作。
-> PF9 是告警灯，主循环无告警分支每 2s `LED_OFF(1)` 清一次，不能当持久指示灯；
-> PE13（板上丝印 D3）只由 MQTT 下行回调驱动，用作云端控制指示灯。
-
-## 软件功能
-
-| 功能 | 实现要点 | 位置 |
-|---|---|---|
-| 基线自学习 | 上电阻塞采 20s，算均值 ± σ 得初始阈值 | `adaptive_threshold.c:71-152` |
-| 自适应火灾阈值 | `fire_th = max(mq2_base + 3σ, 400)`，学习期与运行期两处同语义 | `adaptive_threshold.c:135` `:180` |
-| 防基线污染 | 偏离过大不并入 EWMA：MQ-2 >2σ、温湿度 >3σ 拒绝吸收 | `AT_Update()` `:171-181` |
-| 慢速跟随 | EWMA α = 0.01，适应昼夜/季节渐变 | `adaptive_threshold.h:31` |
-| 连续确认窗 | 入侵需累计 3 次命中才出告警，触发后清零重累积 | `decision_engine.c:152` |
-| 防拆检测 | 8 格滑动窗口（命中 >=3 次 @8dps） | 见 `main.c` `TamperUpdate()` |
-| 告警冷却 | 同类告警 5s 内不重复上报 | `esp8266.c` `SEND_COOLDOWN_MS` |
-| 掉电恢复 | AT24C02 存基线+模式（magic+CRC32，双后端可切回内部 Flash），跳过 20s 学习 | `config_store.c` |
-| 告警事件日志 | W25Qxx 环形追加写 16B/条（1024 条容量），断电黑匣子，开机回显最近 5 条 | `event_log.c` |
-| 存储自证自愈 | 开机"擦→写→读回→比对"自检；SR1/SR2/SR3 诊断，BP/CMP/WPS 写保护位自动解除（共享课程板常见遗留锁定，本板实测 WPS=1 全阵列锁定）；写后读回校验 | `event_log.c` `w25qxx.c` |
-| 备份指针交叉验证 | 备份 SRAM 指针恢复后抽查末条记录，与 FLASH 实际内容脱节自动回退 4 扇区全扫描 | `event_log.c` |
-| 远程抓拍/告警测试 | MQTT 命令 `CAPTURE`（立即拍照并 retain 回推 URL）、`ALARM`（等价 S4 短按，走完整告警链路） | `main.c MQTT_OnCmdReceived()` |
-| 端侧 TinyML | 4 路原始量 → 10 维特征（含偏差、倒数、平方）→ 标准化 → MLP | `ml_inference.h:89` |
-| 手写 MQTT | CONNECT/SUBSCRIBE/PUBLISH/PINGREQ，QoS 0，剩余长度单字节 | `esp8266.c:552-1064` |
-| 云端下行控制 | `+IPD` 两级状态机收帧 → `MQTT_OnCmdReceived` 驱动 PE13；实测 19/19 条命令全响应 | `esp8266.c:792-967`、见 `main.c` `MQTT_OnCmdReceived()` |
-| **MQTT retain 灯状态自动上报** | 固件每次 MQTT 会话就绪（首次连接 / 自动重连 / NTP 重连 / CheckHealth 重建）时，往 `home/light/status` 发 `retain=1` 的 `on` / `off`；新订阅者（前端、CLI）一连上立刻收到最后一条真实状态 | `esp8266.c:100` `:700` `:1339`、`esp8266.h:96`、`main.c:128-174` |
-| **MQTT retain 模式状态自动上报** | 固件每次 MQTT 会话就绪、以及收到 MQTT 模式命令 / 物理按键切模式时，往 `home/mode/status` 发 `retain=1` 的 `HOME` / `AWAY` / `SLEEP`；新订阅者一连上立刻收到最后一次真实模式 | `esp8266.c:101` `:702` `:1341`、`esp8266.h:97`、`main.c:154-164`、`main.c:438-440` |
-| 运行期阈值观测 | `[DBG] MQ2/th/T` 每 10s 一条；安静环境应恒为 `th=400`，低于此值即下限失效 | 见 `main.c` 主循环 `%100` 分支 |
-| NTP 对时 | UDP 123；失败回退编译时间 | `esp8266.c:1066-1243` |
-| 看门狗 | IWDG 2s，基线学习完成后才启动 | 见 `main.c` `main()` 初始化段 |
-
-## Web 前端
-
-配套的实时监控面板，是**独立项目、位于本仓库的同级目录**，不被本仓库跟踪。
+**一句话**：设备自己学出"这个房间正常是什么样"，只在统计显著偏离时告警；网络只负责通知，断网不影响本地决策与记录。
 
 | 项 | 内容 |
 |---|---|
-| 位置 | `D:\Projects\workspace\smartguard-web\` |
-| 技术栈 | Vue 3 + Vite + Pinia + ECharts + mqtt.js（另含 vue-router、dayjs、@lucide/vue） |
-| 页面 | Dashboard / History / About（`src/views/*View.vue`，Settings 已移除） |
-| 看板交互 | CAM 卡片：实时 MJPEG（fetch+AbortController 拉流，Vite 代理同源）↔ 12 张抓拍胶片条（seq 终身序号 + HTTP 缓存，切换秒开）；告警时间线：类型/时间双重筛选、≤60s 连续同型聚为事件簇、中文展示；History：分层存储（2h×10s 原始点 + 7d×5min 均值桶），距离曲线叠加告警竖标 |
-| 连接方式 | MQTT over WebSocket → `ws://192.168.137.1:9001` |
-| **订阅 topic** | 同时订阅 `home/sensor/status`（遥测 + ALERT 告警）、`home/light/status`（固件 retain 的真实灯状态）与 `home/mode/status`（固件 retain 的真实模式状态）。后两者用于纠正按钮 / chip 状态，不再只依赖 localStorage 乐观更新 |
-| **按钮同步** | `ControlPanel.vue` 同时注册 `onLightStatus` 与 `onModeStatus` 回调，前者收到 `on` / `off` 更新 `ledOn`，后者收到 `HOME` / `AWAY` / `SLEEP` 更新当前模式 chip。Broker retained 消息在 WebSocket CONNECT 后极短时间内送达，刷新页面后按钮与 chip 100ms 内显示真实状态 |
-| 配置入口 | broker 地址由 `.env.local` 的 `VITE_MQTT_URL` 提供（`src/services/mqtt-client.js`），未设置则前端拒绝连接并在控制台报错 |
-| 启动 | `npm run dev` → 浏览器打开 <http://192.168.137.1:8080>（`vite.config.js` 固定 `host: 0.0.0.0`、`port: 8080`） |
+| 主控 | STM32F407ZE（Cortex-M4F，168 MHz，192 KB RAM，1 MB Flash） |
+| 实时内核 | FreeRTOS V10.5.1（RVDS/ARM_CM4F port，heap_4，1 kHz tick） |
+| 构建 | Keil MDK 5 + ARMCC V5 + ST 标准外设库 + J-Link |
+| 通信 | ESP8266（AT + 手写 MQTT 3.1.1）、ESP32-CAM（串口指令 + HTTP） |
+| 上位机 | Vue 3 + Vite + Pinia + ECharts + mqtt.js（独立工程，见 [Web 看板](#web-看板)） |
+| 代码规模 | 5 个 FreeRTOS 任务 + 20 余个外设驱动模块（详见 [docs/architecture.md](docs/architecture.md)） |
 
-> ⚠️ 设备侧走 TCP 1883、Web 侧走 WebSocket 9001，是同一 broker 的两个监听端口；
-> 但 9001 的 WebSocket 监听在本仓库内**没有对应的配置或启动脚本**（见"已知限制"），
-> 只克隆本仓库无法直接把前端连上。
+---
+
+## 招聘方速览：这个项目体现了哪些嵌入式能力
+
+| 能力 | 对应实现 | 证据位置 |
+|---|---|---|
+| RTOS 多任务设计 | 5 个任务按 4/3/2/2/1 优先级抢占调度；队列传递告警/模式事件；I2C 与 OLED 总线互斥 | [docs/freertos-tasks.md](docs/freertos-tasks.md) |
+| 外设驱动开发 | GPIO / ADC / USART / TIM 输入捕获 / TIM PWM / 软件 I2C / 软件 SPI / IWDG / RTC / 内部 Flash | `Hardware/` 一模块一目录，[docs/hardware.md](docs/hardware.md) |
+| 通信协议实现 | 不依赖 MQTT SDK，在 AT 透传上手拼 CONNECT / SUBSCRIBE / PUBLISH / PINGREQ 报文 | `Hardware/ESP8266/esp8266.c` |
+| 数据处理与滤波 | 三点中值、σ 自适应阈值、EWMA 慢跟随、迟滞 + 连续确认、防基线污染、滑动窗口投票 | [docs/data-flow.md](docs/data-flow.md) |
+| 状态机与事件驱动 | HOME / AWAY / SLEEP 模式机、告警优先级仲裁、布防静息采样子状态、事件队列 | [docs/state-machine.md](docs/state-machine.md) |
+| 可靠性设计 | IWDG 2 s、配置 magic+CRC32、W25Qxx 环形日志黑匣子、断网热自愈、长阻塞分段喂狗 | [docs/architecture.md](docs/architecture.md#可靠性设计) |
+| 端侧机器学习 | sklearn 训练的 MLP（10→16→8→1）导出为 C 头文件，边界场景辅助二分类 | `Hardware/ML/`、`v1_train/` |
+| 文档与验证 | 硬件核对清单、演示脚本、测试报告、构建烧录说明 | [docs/](docs/) |
+
+---
+
+## 项目背景
+
+常见的门禁 / 烟雾报警器有三个通病：
+
+1. **阈值写死**——换一个房间、换一个安装位置就要重新调参；
+2. **误报多**——一片阴影、一次温度漂移就可能触发；
+3. **断网即失效**——决策依赖云端，网络一断就只剩一个不会响的盒子。
+
+SmartGuard 的验证目标是：**把决策权和可靠性都留在端侧**。上电后先学习 20 秒环境基线，运行期用 EWMA 缓慢跟踪环境变化，只在统计显著偏离时告警；告警事件写入 SPI Flash 黑匣子，网络只承担通知与远程查看。
+
+第二个目标是工程训练：手写 MQTT 3.1.1 报文、手写 EEPROM / SPI Flash 存储层、把 FreeRTOS 迁移做到"驱动与业务逻辑尽量不改"，并保留 `USE_FREERTOS=0` 一键回退到裸机协作式调度的能力。
+
+---
+
+## 系统架构
+
+```mermaid
+graph TB
+    subgraph 感知层
+        L[光敏 PF7 / ADC3_IN5]
+        M[MQ-2 PA4 / ADC1_IN4]
+        T[DHT11 PG9]
+        U[HC-SR04 PC8/PC6 / TIM8 捕获]
+        G[MPU6050 PB8/PB9 / 软件 I2C]
+    end
+
+    subgraph 决策层["决策层（TaskDecision，1 s）"]
+        H[SensorHub 采样<br/>三点中值 + 异常值剔除]
+        A[自适应基线<br/>20 s 学习 + 3σ + EWMA]
+        E[DecisionEngine<br/>入侵 / 火灾 / 防拆仲裁]
+        N[MLP 10→16→8→1<br/>边界辅助]
+    end
+
+    subgraph 执行层
+        O[OLED SSD1306<br/>软件 SPI]
+        B[蜂鸣器 PF8 / TIM13 PWM]
+        D[LED PF9/PF10/PE13/PE14]
+        S1[USART1 115200 日志]
+        F[W25Qxx 环形事件日志]
+        C[AT24C02 配置存储]
+    end
+
+    subgraph 通信层["通信层（TaskComm，50 ms 轮询）"]
+        W[ESP8266 USART3<br/>AT + 手写 MQTT]
+        CAM[ESP32-CAM USART2<br/>抓拍指令 + HTTP]
+    end
+
+    subgraph 云端与看板
+        BR[(mosquitto<br/>TCP 1883 / WS 9001)]
+        WEB[Vue 3 看板<br/>独立工程]
+    end
+
+    L --> H
+    M --> H
+    T --> H
+    U --> H
+    G --> H
+    H --> A
+    H --> E
+    A --> E
+    E --> N
+    E --> O
+    E --> B
+    E --> D
+    E --> S1
+    E --> F
+    E --> C
+    E -->|事件队列| W
+    E -->|事件队列| CAM
+    W --> BR
+    CAM -->|图片 URL| W
+    BR --> WEB
+```
+
+分层职责与模块清单见 [docs/architecture.md](docs/architecture.md)。
+
+---
+
+## 硬件平台
+
+| 模块 | 接口 / 引脚 | 作用 |
+|---|---|---|
+| SSD1306 0.96" OLED | 软件 SPI：SCLK PB0 / DC PB1 / MOSI PF11 / CS PC13 | 本地面板（主页 / 告警页 / 学习进度） |
+| DHT11 | PG9 单总线，2 s 节流 | 温度、湿度 |
+| MQ-2 烟雾 | PA4 / ADC1_IN4 | 烟雾浓度（火灾判据） |
+| 光敏电阻 | PF7 / ADC3_IN5 | 环境光（自动照明） |
+| HC-SR04 | TRIG PC8 / ECHO PC6 / TIM8 输入捕获 | 距离（入侵判据） |
+| MPU6050 | PB8 / PB9 软件 I2C（0x68） | 防拆 / 震动 |
+| AT24C02 | PB8 / PB9 软件 I2C（0x50） | 基线与模式掉电存储 |
+| W25Qxx SPI Flash | CS PB14 / SCK PB3 / MISO PB4 / MOSI PB5 | 告警事件环形日志（16 KB / 1024 条） |
+| ESP8266 | USART3 PB10 / PB11，115200 | WiFi + MQTT |
+| ESP32-CAM | USART2 PA2 / PA3，115200，独立 5 V 供电 | 入侵抓拍 + HTTP 图片 |
+| 板载按键 S1~S4 | PA0 / PE2 / PE3 / PE4（低电平有效） | 模式切换 / 手动告警 / 重学基线 |
+| 无源蜂鸣器 | PF8 / TIM13_CH1 PWM | 分级告警音（`BEEP_ENABLE` 可整体关闭） |
+| 板载 LED | PF9 / PF10 / PE13 / PE14 | 告警与状态指示 |
+
+> 详细接线、模块选型与排错流程见 [docs/hardware.md](docs/hardware.md) 和 [docs/HARDWARE_CHECKLIST.md](docs/HARDWARE_CHECKLIST.md)。
+>
+> **注意**：PB3 / PB4 同时是 JTDO / JTRST，调试器必须工作在 SWD 模式；PC13 同时被 RTC Tamper 与 OLED_CS 使用，RTC 初始化时必须禁用 Tamper。
+
+---
+
+## 软件环境与核心技术栈
+
+| 类别 | 选型 |
+|---|---|
+| IDE / 编译器 | Keil MDK 5，ARMCC V5（AC5） |
+| HAL / 库 | STM32F4xx 标准外设库（未使用 HAL / CubeMX 生成代码） |
+| RTOS | FreeRTOS V10.5.1，`portable/RVDS/ARM_CM4F`，`heap_4` |
+| 端侧 ML | Python + scikit-learn 训练，导出静态 C 数组（`ml_inference.h`） |
+| 网络 | ESP8266 AT 指令，TCP 1883；手写 MQTT 3.1.1（QoS 0） |
+| 调试 | J-Link SWD，USART1 115200 日志 |
+| 上位机 | Vue 3 + Vite + Pinia + Vue Router + ECharts + mqtt.js |
+
+---
+
+## FreeRTOS 多任务设计
+
+| 任务 | 优先级 | 栈（word） | 周期 | 职责 |
+|---|---|---|---|---|
+| `TaskFast` | 4 | 512 | 50 ms | 按键扫描 + IWDG 喂狗 |
+| `TaskTamper` | 3 | 320 | 200 ms | MPU6050 防拆采样（5 Hz） |
+| `TaskDecision` | 2 | 640 | 1000 ms | 传感器采样、决策、告警本地执行 |
+| `TaskComm` | 2 | 1024 | 50 ms 轮询 | MQTT 收包、遥测 / 心跳 / 健康检查、告警上报、CAM 抓拍 |
+| `TaskDisplay` | 1 | 640 | 500 ms | RTC、OLED 刷新、配置落盘 |
+
+任务间通信：
+
+- **事件队列** `s_comm_queue`（深度 8，元素 2 字节）：`EVT_KEY_MODE` / `EVT_ALERT`，由按键任务和决策任务投递，通信任务消费；
+- **I2C 互斥锁** `s_i2c_mutex`：AT24C02 与 MPU6050 共用 PB8/PB9；
+- **OLED 互斥锁** `s_oled_mutex`：显示任务与按键即时重绘共用软件 SPI。
+
+设计要点：
+
+- 所有 ESP8266 / ESP32-CAM 串口访问收敛到 `TaskComm` 单任务，避免抢占调度下两个任务同时操作 USART；
+- USART1/2/3 中断服务程序只填充环形缓冲，**不调用任何 FreeRTOS API**；NVIC 分组为 `NVIC_PriorityGroup_4`；
+- `vApplicationIdleHook()` 执行 `__WFI()`，保留低功耗空闲行为；
+- 栈溢出与堆分配失败钩子只置故障标记并停机，便于 J-Link 附加后定位。
+
+完整时序、优先级与回退方案见 [docs/freertos-tasks.md](docs/freertos-tasks.md)。
+
+---
+
+## 传感器数据处理与滤波
+
+| 处理 | 实现 |
+|---|---|
+| 距离 / 光照毛刺抑制 | 每周期各采 3 次取中值；距离 < 2 cm 或 > 400 cm 视为无效并剔除 |
+| DHT11 节流 | 决策周期 1 s，DHT11 按调用次数二分频为 2 s；读取失败保留上次有效值 |
+| 基线学习 | 上电阻塞采样 20 次，计算均值与标准差，得到初始阈值 `mq2_fire_threshold = max(mean + 3σ, 400)` |
+| EWMA 慢跟随 | α = 0.01；光照用 2α 以适应昼夜变化 |
+| 防基线污染 | MQ-2 偏离超过 2σ、温湿度偏离超过 3σ 时不吸收，避免真实异常被学进基线 |
+| 火灾判定 | 烟雾 ≥ 阈值 + 60 迟滞带，且温度高于基线或 ≥ 40 °C，连续 4 个样本成立才告警 |
+| 入侵判定 | 进入 AWAY 后先采 10 个距离样本取中位数作为静息距离；比静息距离近 > 15 cm 才判逼近；距离 ≤ 8 cm 当周期直通告警；其余需连续 2 次命中 |
+| 防拆判定 | MPU6050 高频采样 + 8 格滑动窗口，命中 ≥ 3 次触发；HOME 模式主动抑制 |
+| 边界辅助 | 距离 < 120 cm 且规则未命中时，MLP 用光照 / 距离 / 温湿度及基线偏差做二分类 |
+
+> 具体公式、阈值来源与参数位置见 [docs/data-flow.md](docs/data-flow.md)。
+
+---
+
+## 状态机与事件驱动
+
+三种守护模式：
+
+| 模式 | 入侵检测 | 防拆检测 | 自动照明 | 火灾检测 |
+|---|---|---|---|---|
+| HOME | 关闭 | 关闭 | 开启 | 开启 |
+| AWAY | 开启（10 s 布防静息采样） | 开启 | 开启 | 开启 |
+| SLEEP | 关闭 | 开启 | 关闭 | 开启 |
+
+告警仲裁优先级为 **火灾 > 防拆 > 入侵**，同类告警 5 s 内不重复上报；本地蜂鸣器、LED、OLED 告警页与事件日志只在告警状态翻转时触发。
+
+状态定义、迁移条件与事件流见 [docs/state-machine.md](docs/state-machine.md)。
+
+---
+
+## 通信链路与数据流
+
+### ESP8266 + 手写 MQTT
+
+固件通过 USART3 以 AT 指令连接 WiFi，再建立 TCP 连接；MQTT 报文由 `esp8266.c` 手工组包，未使用任何 MQTT SDK。
+
+| Topic | 方向 | 载荷 | QoS / retain |
+|---|---|---|---|
+| `home/sensor/status` | 上行 | 遥测 `T=..,H=..,D=..,L=..,M=..`；告警 `ALERT:Intrusion!` / `ALERT:Fire!` / `ALERT:Tamper!` / `ALERT:EnvAbnormal!` | QoS 0 / 否 |
+| `home/light/status` | 上行 | `on` / `off` | QoS 0 / **retain** |
+| `home/mode/status` | 上行 | `HOME` / `AWAY` / `SLEEP` | QoS 0 / **retain** |
+| `home/cam/shot` | 上行 | 抓拍图片 URL | QoS 0 / **retain** |
+| `home/light/cmd` | 下行 | `on` / `off` / `HOME` / `AWAY` / `SLEEP` / `CAPTURE` / `ALARM` | QoS 0 / 否 |
+
+- 遥测 10 s 一条，心跳按 keepalive / 2（30 s）发送；
+- 下行命令做了 500 ms 合并上报与 `CAPTURE` 5 s 硬限速，防止命令洪峰挤掉 `SEND OK` 窗口；
+- 断网恢复为分级自愈：MQTT 重连退避 → WiFi 重关联 → 模块软复位，全部在通信任务内完成，不重启系统。
+
+### ESP32-CAM
+
+- STM32 通过 USART2 发送 `STATUS` / `CAPTURE` / `LED ON|OFF`；
+- CAM 返回 `OK http://<ip>/shot.jpg`，固件把 URL 以 retain 方式发布到 `home/cam/shot`；
+- 入侵告警时自动抓拍；Web 端可手动抓拍与查看 12 张历史环；
+- CAM 侧提供 `/snapshot` 与 `/stream` HTTP 端点，MJPEG 实时流为单客户端。
+
+### Web 看板
+
+Vue 3 看板通过 MQTT over WebSocket（`ws://<broker>:9001`）订阅上述主题，展示实时数据、告警时间线、距离曲线、CAM 抓拍与远程控制。**该工程独立于本仓库**，位于工作区的同级目录 `smartguard-web/`，不在本仓库跟踪范围内；其技术栈与页面说明见该工程自己的 README。
+
+完整数据流（采样 → 决策 → 队列 → MQTT → 看板）见 [docs/data-flow.md](docs/data-flow.md)。
+
+---
 
 ## 目录结构
 
 ```
 SmartGuard/
-├── Core/            启动文件 + 中断向量
-├── Library/         ST 标准外设库
+├── Core/            启动文件 startup_stm32f40_41xxx.s + Cortex-M4 内核头
+├── Library/         STM32F4xx 标准外设库
+├── FreeRTOS/        FreeRTOS V10.5.1 内核 + ARM_CM4F port + FreeRTOSConfig.h
 ├── Hardware/        驱动层，一模块一目录
-│   ├── APP/         ★ sensor_hub / adaptive_threshold / decision_engine
-│   ├── ML/          自动生成的 MLP 权重头
-│   ├── CONFIG_STORE Flash 持久化
-│   └── ADC BEEP DELAY DHT11 ESP32_CAM ESP8266 HCSR04 IIC KEY LED
-│      MATRIX_KEY MPU6050 MQ2 OLED PWM RTC SERVO USART WDG
-├── User/            main.c + Keil 工程 Template.uvprojx
+│   ├── APP/         sensor_hub / adaptive_threshold / decision_engine
+│   │                event_log / scheduler（裸机协作式调度，USE_FREERTOS=0 时启用）
+│   ├── ML/          sklearn 导出的 MLP 权重头
+│   ├── CONFIG_STORE 配置掉电存储（AT24C02 / 内部 Flash 双后端）
+│   └── ADC AT24C02 BEEP DELAY DHT11 ESP32_CAM ESP8266 HCSR04
+│      IIC KEY LED MPU6050 OLED PWM RTC USART W25QXX WDG
+├── User/            main.c、中断向量、Keil 工程 Template.uvprojx
 ├── v1_train/        数据采集 + sklearn 训练 + 权重头生成
-├── tools/           OLED 字库生成脚本
-├── docs/            硬件核对清单、诊断报告、历史 README
-│   └── logs/        串口验证日志（.gitignore 已忽略）
+├── tools/           OLED 字库生成、UDP 接收等辅助脚本
+├── docs/            架构 / FreeRTOS / 状态机 / 数据流 / 硬件 / 构建 / 测试文档
+│   └── logs/        历史串口验证日志（本地保留，不入库）
 └── Object/          编译产物（已 gitignore）
 ```
 
-## 快速上手
+---
 
-**1. 编译**（命令行全量重编译）
+## 编译与烧录
 
-```bash
-"D:/Keil_v5/UV4/UV4.exe" -r User/Template.uvprojx -j0 -o build_log.txt
-tail -3 build_log.txt        # 期望 0 Error(s), 0 Warning(s)
-```
+### 环境
 
-**2. 烧录**：J-Link 接 SWD，Keil 内按 F7，或 `UV4 -f User/Template.uvprojx`。
+- Keil MDK 5（ARMCC V5）
+- J-Link 驱动与 SWD 接线
+- 串口工具（USART1 115200）
 
-**3. 起 broker**（仓库无脚本，需自行安装 Windows mosquitto 原生服务）
-
-```bash
-# 安装 mosquitto（官网下载 Windows 版）后，编辑
-# C:\Program Files (x86)\mosquitto\mosquitto.conf，新增：
-listener 1883                      # TCP 1883：固件 MQTT over AT+MQTTTCONN
-listener 9001 protocol websockets  # WebSocket 9001：前端 mqtt.js over ws://
-# 然后：
-net start mosquitto                # 启动服务
-# 浏览器连 ws://192.168.137.1:9001
-# 前端订阅 home/light/status 会立即收到 broker retained
-```
-
-**4. 观察遥测**（每 10s 一条）
+### 命令行全量编译
 
 ```bash
-mosquitto_sub -h 192.168.137.1 -p 1883 -t 'home/#' -v
-# home/sensor/status  T=27,H=45,D=120,L=1255
+UV4.exe -r User/Template.uvprojx -j0 -o build_log.txt
 ```
 
-**5. 本地交互**：S1/S2/S3 切 HOME/AWAY/SLEEP 并落盘，S4 触发一次手动告警测试。
-串口 COM11 @115200（STM32）、COM12（ESP32-CAM）；上电后 OLED 显示基线学习进度。
+期望结果：
 
-## 项目难点与解决
+```
+"..\Object\Template.axf" - 0 Error(s), 0 Warning(s).
+```
 
-| 难点 | 为什么难 | 怎么解决 |
+当前工作区最近一次全量构建（2026-10-22，含 FreeRTOS 与蜂鸣器启用）：
+
+```
+Program Size: Code=51568 RO-data=6504 RW-data=372 ZI-data=55692
+0 Error(s), 0 Warning(s)
+```
+
+### 烧录与运行
+
+1. J-Link 连接 SWD（SWDIO / SWCLK / GND / 3V3）；
+2. Keil 内下载，或 `UV4.exe -f User/Template.uvprojx`；
+3. 串口 115200 打开 USART1，上电后应看到启动横幅与基线学习 / 恢复日志。
+
+### 关键配置宏
+
+| 宏 | 位置 | 说明 |
 |---|---|---|
-| 中文 Windows GBK 误解析 | 无 BOM 的 UTF-8 源文件里，中文注释会吞掉紧随的 `\r\n` 转义，报错点飘到下一行 | 所有 .c/.h 统一 UTF-8 **with BOM**；`.gitignore` 反向要求**无 BOM**，用 `git check-ignore -v` 验 |
-| 屏蔽死代码引出 7 个 Error | 用未闭合 `/*` 注掉整段代码，补上闭合就"激活"了引用已删宏的代码 | 死代码一律 `#if 0 ... #endif` 隔离；每次结构性改动后立刻编译验证 |
-| 固定阈值误报 | 同一阈值在白天/夜里、开灯/关灯下表现完全不同 | 20s 基线 + σ 带判异常 + EWMA 慢跟随 + 大偏离拒绝吸收 |
-| HC-SR04 偶发 D=0 | 回波超时被当成 0cm，直接命中硬阈值造成误报 | 超时返回 0，决策入口判 `distance <= 0` 直接放过并衰减 hit |
-| 边界地带难判 | 40~120cm 既可能是人也可能是窗帘阴影 | 该区间交给 MLP，硬阈值与自适应阈值优先级更高 |
-| 每次上电重学 20s | 掉电重启后要重新等基线，演示时不友好 | Flash Sector 7 + magic + CRC32，校验通过即恢复基线与模式 |
-| 无现成 MQTT 库 | ESP8266 只有 AT 通道，塞不进 SDK | 手拼固定头/剩余长度/变量头；心跳按 keepalive/2 触发，掉线重连重建会话 |
-| 下行帧被吃掉 | AT 应答读取循环和 SEND OK 等待窗（50~200ms）会把期间到达的 `+IPD` 帧一并读走丢弃 | 5 处 blind flush 与 SEND OK 循环改成"字节一到就喂解析器"；`MQTT_FeedByte` 剥前缀、`MQTT_ParseFrame` 解包，带长度越界卫兵 |
-| 火灾阈值反复误报 | 阈值有两个写入点，运行期那处漏掉 400 下限，安静环境塌到 ~201 后又被 2σ 吸收门锁死 | 两处统一为 `max(ewma+3σ, 400)`；实测打火机 MQ2 冲到 1082 只出 1 条告警，按旧阈值 234 会多 3 条误报 |
-| 一次按压触发多次 | 按键配 `NOPULL`，空闲态全靠外部上拉，浮空被 10Hz 轮询读成伪边沿 | 改 `GPIO_PuPd_UP`；实测 2 次按压 → 2 条打印严格 1:1，不需要软件消抖 |
-| 热复位后开机死循环 | IWDG 只能掉电关闭、跨热复位存活，而 `ESP8266_Reset` 的 2s 等待正好等于 2000ms 超时且零喂狗 | 改 `20×(delay_ms(100)+IWDG_Feed())`；冷启动本来安全是因为 `IWDG_Init` 排在基线学习之后 |
-| 命令 flood 打挂 MQTT 会话 | 网页 LED 按钮快速连点 → 下行命令 flood → 固件每条命令都 retain 上报 → 上报把 `SEND OK` 应答窗口挤掉 → 固件误判 session lost 重连，重连窗口内"上行停、下行活"（表现为 DEV 离线却能控灯） | Web 端 `ControlPanel.vue` 加 300ms 命令节流（TOO FAST 提示 + 乐观翻转回滚）；同类隐患与加固方案见下节"同类隐患排查" |
+| `USE_FREERTOS` | `User/Template.uvprojx` 预处理符号 | `1`=FreeRTOS 抢占调度，`0`=裸机协作式调度 |
+| `USE_OLED` / `USE_ESP8266` / `USE_DHT11` / `USE_ML` / `USE_RTC` | `Hardware/APP/decision_engine.h` | 模块级开关 |
+| `USE_MQ2` | `Hardware/ADC/adc.h` | 烟雾通道开关 |
+| `USE_ESP32_CAM` | `Hardware/ESP32_CAM/esp32_cam.h` | CAM 联动开关 |
+| `BEEP_ENABLE` | `Hardware/BEEP/beep.h` | 蜂鸣器总开关 |
 
-## 同类隐患排查（命令/请求洪峰）
+> WiFi 与巴法云凭据外置在 `Hardware/ESP8266/wifi_config.h`、`bemfa_config.h`，这两个文件已被 `.gitignore` 排除。首次编译前需从同目录的 `.example` 模板复制并填写。
 
-由 LED flood 事故（2026-09-22，现象"DEV 离线但可控灯"）引发的全栈复查，按"用户操作/定时任务能否无节制地发命令、发请求、写存储"逐一审计。✅ = 已修复，⏳ = 方案已定待实施，ℹ️ = 有风险但可接受。
+完整的构建环境、参数与常见问题见 [docs/build-and-flash.md](docs/build-and-flash.md)。
 
-### Web 前端（smartguard-web）
+---
 
-| # | 风险点 | 说明 | 解决方案 | 状态 |
-|---|---|---|---|---|
-| W1 | LED/MODE/ACTIONS 按钮连点 | 快速连点造成 MQTT 命令 flood，是本次事故直接原因 | `sendCmd()` 统一 300ms 节流，被拦截提示 `TOO FAST`；LED 乐观翻转在发送失败时回滚 | ✅ |
-| W2 | `selectMode` 乐观更新不回滚 | 命令被节流拒发时 mode chip 已切换且已写 localStorage，UI 与设备不一致，要等固件下次 retain 上报才纠正 | 与 `toggleLed` 对齐：`sendCmd` 返回 false 时回滚 `mode` 再 `persistState()` | ✅ |
-| W3 | `CamShotCard` 404 自愈补拍绕过节流 | 缩略图 404 时直接调裸 `mqtt.publish('CAPTURE')`，不走 `sendCmd` 的 300ms；broker retain 的 seq 超前于 CAM 环内容时（环被刷/重烧），每张新 URL 404 都会再补一条 CAPTURE，而固件侧每条 CAPTURE 离线时阻塞主循环约 4s | 三重防 flood：同一 URL 只补一次 + 最小补拍间隔 10s + 连续 3 次补拍仍 404 放弃自愈（成功出图清零计数） | ✅ |
-| W4 | LIVE 快速 ON→OFF→ON 叠加拉流 | OFF 时旧 `liveLoopRun` 正阻塞在 `reader.read()`，`abort()` 的异常到达前若已重新 ON，旧循环 while 条件仍成立继续跑，与新循环并存 → 两条 `/stream` 同时打到单客户端 ESP32-CAM，第二个连接最长排队 300s | 拉流代数 `liveRunId`：每次切换递增，旧循环每轮迭代校验代数、失代立即退出 | ✅ |
-| W5 | 定时器叠加 | 已审计全部 `setInterval/setTimeout`（TopBar 1s、AppLayout 450ms、hint 2s、toast 3s、sensor.js 1s debounce 写盘），均"先 clear 再建"或单例组件 | 无需处理 | ℹ️ |
-| W6 | localStorage 高频写入 | 遥测 10s/条触发约 300KB 全量写（有 1s debounce 合并），告警受固件 5s 冷却限制，实时帧只走 blob URL 不落盘 | 频率可接受；若低端机 jank 可把 history 写盘改 `requestIdleCallback` | ℹ️ |
+## 运行方法
 
-### 固件（STM32F407）
+1. 准备 2.4 GHz 热点，把 SSID / 密码填入 `wifi_config.h`；
+2. 启动本地 mosquitto：`listener 1883` 供固件 TCP 连接，`listener 9001 protocol websockets` 供 Web 看板连接；
+3. 烧录后上电，等待基线学习完成（或从 EEPROM 恢复）；
+4. 用 `mosquitto_sub -h <broker> -t 'home/#' -v` 观察遥测与告警；
+5. 按 S1 / S2 / S3 切换 HOME / AWAY / SLEEP；S4 短按触发一次手动告警测试，长按 1.5 s 回放事件日志；S3 长按 2 s 重新学习 20 s 基线。
 
-| # | 风险点 | 说明 | 解决方案 | 状态 |
-|---|---|---|---|---|
-| F1 | **下行命令零去重零限速** | `MQTT_OnCmdReceived()` 是 flood 事故在固件侧的镜像：修复前唯一防线是 Web 端 300ms 节流，任何其他 MQTT 客户端（`mosquitto_pub`、第二个浏览器标签）都可绕过 | **命令不丢、只合并上报**：on/off/HOME/AWAY/SLEEP 立即生效，retain 上报 500ms 最多一条（`ReportLightCoalesced`/`ReportModeCoalesced`），被合并的挂起由 `task_fast` 的 `CmdReportFlush()` 补报最后一态（最终一致）；CAPTURE 硬限速 5s 直接丢弃；ALARM 靠单槽覆盖+5s 冷却天然去重 | ✅ |
-| F2 | CAPTURE 阻塞主循环 ~4s | CAM 离线时 1s 探测 + 3s 等待，协作调度器整体冻结（仅靠 ReadLine 内喂狗撑住 IWDG）；连发 10 条 ≈ 40s 冻结 | 已受 F1 的 CAPTURE 5s 硬限速保护（连发最坏退化为每 5s 一次 4s 阻塞，不再持续冻结）；进一步可改状态机非阻塞（探测→等待→取图拆成三个 tick 阶段） | ✅（限速兜底）/ ⏳（非阻塞化留答辩后） |
-| F3 | `s_pending_cmd` 单槽覆盖 | 连发时后命令静默覆盖先命令，无队列无 NACK | 与 F1 的限速配合后即天然缓解；如需可靠可改 2~4 槽环形队列 | ℹ️ |
-| F4 | 已有正面防护 | 告警 5s 重复冷却、EventLog 仅状态翻转落盘、Config 脏标志 1s 合并写、60s 重连退避、遥测 10s/心跳 30s 节拍 | — | ✅ |
-| F5 | SEND OK 等待窗不容忍 +IPD 交错 | 2026-09-22 flood 实测：F1 已把 20 条命令的上报压到 2 条，但其中 1 条上报的 SEND OK 等待窗仍被 flood 尾包的 `+IPD` 挤掉 → 误判 session lost 重连一次（~2s 自愈并重报最终态，功能无损）。根因是"下行帧与 SEND OK 窗口碰撞"的残留形态 | `ESP8266_MQTTPublish` 的 SEND OK 等待循环在窗口内收到 `+IPD` 时继续等 SEND OK（字节喂解析器但不提前判失败），超时后再判丢失 | ⏳（答辩后） |
+---
 
-**F1 实测记录（2026-09-22，mosquitto_pub 连发 20 条交替 on/off）**：20 条命令仅触发 2 条 retain 上报（首条 on + 末条 off，合并生效）；中间 18 条被 `s_pending_cmd` 单槽覆盖（状态型命令可接受）；最终态收敛正确（retained = 末条命令 off）；F5 残留的碰撞导致 1 次会话重连，~2s 自愈并自动重报灯态/模式，系统功能全程无损。
+## 测试与验证
 
-### ESP32-CAM
+| 范围 | 结果 | 记录 |
+|---|---|---|
+| 全量编译 | 2026-10-22：0 Error / 0 Warning | `Object/Template.build_log.htm` |
+| 启动自检 | 横幅、硬件初始化、基线学习 / EEPROM 恢复、进入主循环 | [docs/test-report.md](docs/test-report.md) |
+| MQTT 上下行 | 遥测、灯控、模式同步、告警上报、retain 状态回读 | [docs/p0_test_log.md](docs/p0_test_log.md) |
+| 告警链路 | 入侵 / 火灾 / 防拆判定与本地声光、事件落盘 | [docs/test-report.md](docs/test-report.md) |
+| 掉电恢复 | 配置 magic+CRC32 校验、事件日志写指针恢复 | [docs/test-report.md](docs/test-report.md) |
+| 断网恢复 | MQTT 重连、WiFi 重关联、模块软复位分级自愈 | [docs/test-report.md](docs/test-report.md) |
 
-| # | 风险点 | 说明 | 解决方案 | 状态 |
-|---|---|---|---|---|
-| C1 | `/snapshot` HTTP 端点无节流无鉴权 | 同网段任何客户端可连续触发拍照，把 12 张历史环快速刷掉（真正的入侵证据被顶出环），并与串口 CAPTURE 抢 camera fb | 端点加最小间隔（如 2s，间隔内返回 429 或上一次缓存帧）；固件只在受信任热点内运行，鉴权非必需 | ⏳（答辩后） |
-| C2 | 串口 CAPTURE 无速率限制 | `g_snapshot_busy` 防并发 + STM32 同步等响应使命令天然串行化，打爆风险在 STM32 侧（见 F1/F2）而非此处 | 随 F1 落地即闭环 | ℹ️ |
-| C3 | `/stream` 单线程排队 | 已有 300s 上限 + 写失败快速退出；第二个 /stream 连接最长排队 300s（与 W4 叠加时 Vite 代理连接挂起） | 随 W4 落地即闭环 | ℹ️ |
+> 测试结论按"已实测 / 仅静态检查 / 未验证"分级标注，详见 [docs/test-report.md](docs/test-report.md)。
 
-**剩余优先级**：F5 > C1 > F2 非阻塞化 > 其余（W2/W3/W4 + F1 限速已于 2026-09-22 修复并实测，固件编译 0 Error 0 Warning 验证通过）。至此命令 flood 链路形成 Web 节流（第一道）+ 固件上报合并/CAPTURE 硬限速（第二道）双层防线；F5 是 flood 下仍会偶发一次重连的最后残留。
+---
 
-## 已知限制
+## 已知限制与未验证项
 
-1. ~~**AWAY 与 SLEEP 行为一致**~~（v0.7.1 已补全）：SLEEP 现在关闭超声波入侵检测（起夜不误报）与自动照明（睡觉不亮灯），保留防拆与火灾；HOME 关入侵/防拆、照明自动；AWAY 全布防。
-2. **火灾温度关是死代码**：DHT11 实测 20 次采样恒为 `temp=26.0 humi=41.0` → `temp_sigma=0.0`，`adaptive_threshold.c:203` 的 `temperature < temp_ewma + 2σ` 退化成 `26.0 < 26.0` = false，`&&` 短路 → 温度关对任何温度恒放行。这块板的火灾检测实质是**纯烟雾单判据**。
-3. **火灾检测不受模式门控**：任何模式下 MQ-2 越限都告警（安全上保守，但非设计意图）。
-4. ~~**`loop_tick` 比真实时间慢约 16%**~~（已修复）：主循环已改为协作式任务调度器（`scheduler.c`，周期基于真实 `g_tick`，空闲 `__WFI`），时漂消除；2s 决策/10s 遥测/30s 心跳均为真实时间。
-5. ~~**看门狗长延时只修了 1 处**~~（v0.7.1 已修）：`AT_LearnBaseline` 学习循环已分段喂狗；`ESP8266_Reset` 等长等待均有界喂狗。
-6. ~~**按键零消抖**~~（v0.7.1 已修）：`HandleBoardKey()` 增加 50ms 消抖窗，S4 双击误触发已消除；S4 改为短按（松开 <1.5s）手动告警、长按 ≥1.5s 回放事件日志。
-7. **引脚复用冲突**：PF9 同时是 LED0 与 TIM14 PWM，PE14 同时是 LED3 与 TIM1 PWM，PC13 同时是 OLED CS 与 RTC 输出。叠加上面那张 LED 错位表，`LED_ON(n)` 必须先换算成实际引脚再下结论。
-8. ~~**`AT_TEMP_RISE_PER_MIN` 是死宏**~~（v0.7.1 已删除）。
-9. ~~**MQ2 封装层是死代码**~~（已移除）：实际采样走 `Hardware/ADC/adc.c` 的 `ADC_ReadMQ2()`，`adc.h` 默认 `USE_MQ2 = 1`，火灾分支真实启用。
-10. **凭据已外置但 git 历史仍含旧明文**：WiFi 凭据与巴法云 UID/TOPIC 均已外置到 gitignored 的 `wifi_config.h` / `bemfa_config.h`（模板见各自 `.example`），但 `esp8266.h` 与 `docs/README_v0.6_legacy.md` 的历史版本、以及 `origin/master` 仍含旧明文，公开仓库前必须处理；凭据已轮换。
-11. **注释滞后于代码**：`decision_engine.h:8` 写 OLED 用 PB3/PB5/PB9，实际 PB0/PF11/PC13 且 PB9 是软件 I2C SDA；`iwdg.h:17` 写 1s，实际 2s。~~启动横幅印 `v0.4`~~（已修正为 v0.7）。
-12. **MQTT 断网后恢复需 30s~5min，取决于网络状况**：这不是重试退避，而是**健康检查周期**决定的。`ESP8266_CheckHealth()` 只在 `loop_tick % 3000` 时调用（标称 300s，叠加第 4 条的 16% 偏差实测约 348s），其内部还要求 `s_send_fail_count >= 3` 才重建 MQTT；该计数在每次 `AT+CIPSEND` 拿不到 `>` 时 +1，而遥测每约 11.6s 发一次，攒满 3 次约需 35s。故断网恰好发生在健康检查之前 → 约 30~40s 恢复；刚错过一次健康检查 → 最坏要等满一个周期，约 5~5.8min。
-13. **broker 为外部 Windows 原生 mosquitto 服务，仓库内无配置无启动脚本**：实测进程名 `mosquitto`（PID 5684，非 Docker），同一进程同时监听 **TCP 1883**（固件 MQTT）与 **WebSocket 9001**（前端 WebSocket）。配置文件位于 `C:\Program Files (x86)\mosquitto\mosquitto.conf`，不在本仓库也不在上级目录。仓库声称的 `cd .. && ./start_mqtt.bat` 在 `D:\Projects\workspace\` 及其上级 **全盘不存在**。读者要复现前端连接，必须**自行安装 Windows mosquitto 原生服务**，在 `mosquitto.conf` 里新增一条 `listener 9001 protocol websockets`，然后启动服务。
-14. **编译验证需注意陈旧构建**：Keil UV4 的增量构建在某些情况下会使用陈旧目标文件，导致"0 Error 0 Warning"但实际未编入改动（2026-09 实测：一次构建 ZI-data 未随新增静态缓冲增长，下次全量 Rebuild 才补入 +128）。请用 `User\build_verify.bat` 验证：脚本会检查"Rebuild target"全量标记并比对所有源文件与目标文件的时间戳，避免假阳性。
+1. **火灾温度判据退化**：本板 DHT11 实测长期恒定（26.0 °C / 41 %），温度 σ = 0，温度关实际不起作用，火灾检测实质为烟雾单判据。
+2. **火灾检测不受模式门控**：任何模式下 MQ-2 越限都会告警，属于安全保守设计，但不是模式设计意图。
+3. **ESP32-CAM 单客户端**：`/stream` 同一时刻只服务一个连接，第二个连接最长排队 300 s；`/snapshot` 无鉴权、无节流（待办）。
+4. **`CAPTURE` 阻塞**：CAM 离线时一次抓拍最坏阻塞通信任务约 4 s（1 s 探测 + 3 s 等待），已用 5 s 硬限速兜底，尚未改为非阻塞状态机。
+5. **MQTT 断网恢复时间不固定**：受健康检查周期与失败计数影响，实测约 30 s ~ 数分钟；不是固定退避值。
+6. **broker 不在仓库内**：需要自行安装并配置 mosquitto（1883 TCP + 9001 WebSocket），仓库不提供启动脚本。
+7. **开机模式短暂显示**：上电默认 AWAY，若 EEPROM 保存的是 HOME / SLEEP，启动早期可能先显示 AWAY 再纠正，最终状态正确。
+8. **远程切换的模式不落盘**：只有板载按键切换会写 EEPROM；通过 MQTT 切换的模式掉电后回到最后一次按键保存的值。
+9. **ML 日志字符串与实现不一致**：启动打印为 `10->16->1`，实际网络结构为 10→16→8→1（仅日志文本问题）。
+10. **凭据历史**：早期提交曾包含明文 WiFi / 巴法云凭据，当前文件已外置并轮换；Git 历史未重写。
+11. **未验证项**：长时间（> 24 h）连续运行、极端网络抖动、多浏览器并发命令洪峰下的最终一致性、CAM 断线后的长时间自愈，均未做正式回归。
+
+---
+
+## 文档索引
+
+| 文档 | 内容 |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | 分层架构、模块清单、启动流程、可靠性设计 |
+| [docs/freertos-tasks.md](docs/freertos-tasks.md) | 任务职责、优先级、栈、IPC、调度与回退方案 |
+| [docs/state-machine.md](docs/state-machine.md) | 模式状态机、告警仲裁、布防子状态 |
+| [docs/data-flow.md](docs/data-flow.md) | 采样 → 决策 → 告警 → 上云的完整数据流 |
+| [docs/hardware.md](docs/hardware.md) | 硬件组成、引脚、总线与供电注意 |
+| [docs/build-and-flash.md](docs/build-and-flash.md) | 构建环境、编译、烧录、配置宏 |
+| [docs/test-report.md](docs/test-report.md) | 测试条件、结果、未验证项 |
+| [docs/HARDWARE_CHECKLIST.md](docs/HARDWARE_CHECKLIST.md) | 硬件核对与排错清单（详细版） |
+| [docs/DESIGN_PRESENTATION.md](docs/DESIGN_PRESENTATION.md) | 设计说明与答辩讲解要点 |
+| [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) | 6 分钟演示脚本与问答 |
+| [docs/PCB_DESIGN_REQUIREMENTS.md](docs/PCB_DESIGN_REQUIREMENTS.md) | PCB 设计需求规格书 |
+
+---
 
 ## 版本记录
 
-| 阶段 | 内容 | 提交 |
-|---|---|---|
-| v0.4 | 裸机采集 + 自适应阈值 + 多传感器融合 + USART1 日志 | `1786839` |
-| v0.4.x | σ 掉电恢复、告警统一出口、非阻塞按键、HC-SR04 时序、RTC 实时时间、MQ-2 引脚修正 | `3df6ee1`…`1269a72` |
-| 收尾 | 源文件统一 UTF-8 BOM、OLED 英文界面、目录整理 | `6a15137` `fa89681` |
-| 上云 | 巴法云 TCP 遥测（后下线，`#if 0` 保留备查） | `b81dd05`…`092c58e` |
-| 当前 | 自建 MQTT broker + 下行控制回调；编译警告 13→0；仓库瘦身（厂商资料移出、文档归档） | `6f6f398`…`b16511c` |
-| 本轮 | MQTT 下行两级状态机 + 丢包窗口；火灾阈值 400 下限；按键内部上拉；`[DBG]` 观测行；`ESP8266_Reset` 分段喂狗 | `a227282`…`5afef93` |
-| v0.6.1 | MQTT 下行控制 + 防拆检测（滑动窗口）+ OLED 主界面重构 + Web 前端 | `0dd3314` `fca83f4` |
-| v0.6.2 | MQTT retain 双向状态同步（灯状态 + 模式状态）；物理按键切模式同步上报 broker；修复"模式命令污染灯状态 topic"bug | `e603dc3` |
-| v0.7 | 协作式调度器对齐课程模板（任务表注册/按名启停/`__WFI`）；存储四层重构：AT24C02 配置 + W25Qxx 告警事件环形日志 + VBAT RTC；入侵拍照全链路（ESP32-CAM → MQTT retain → Web 出图）；P3 加固（分段喂狗、snprintf、TXE/TC 有界等待、MQTT 跨帧拼包、重连等待钩子续采防拆） | — |
-| v0.7.1 | SLEEP 语义补全（关入侵/照明，留防拆/火灾）；备份 SRAM 写指针；分级告警音；S4 消抖 + 长按回放日志；死宏清理 | — |
-| v0.7.2 | 按键极性实测修正（四键全低有效，含 PA0）；W25Qxx 写保护自愈（SR 诊断 + BP/CMP/WPS 解除 + 写自检 + 读回校验 + 指针交叉验证）；CAM 12 张历史环 + seq 终身序号 + HTTP 缓存头；MQTT `CAPTURE`/`ALARM` 远程命令；Web 看板重构（实时/胶片条、聚合时间线、History 7 天分层、About 项目文档页） | — |
+| 阶段 | 内容 |
+|---|---|
+| v0.4 | 裸机采集 + 自适应阈值 + 多传感器融合 + USART1 日志 |
+| v0.5~v0.6 | MQTT 双向通信、防拆检测、OLED 主界面、Web 看板 |
+| v0.7 | 协作式调度器、四层存储、入侵抓拍全链路、可靠性加固 |
+| v0.7.1 | SLEEP 语义补全、备份 SRAM 写指针、分级告警音、S4 消抖 |
+| v0.7.2 | 按键极性修正、W25Qxx 写保护自愈、CAM 历史环、远程 CAPTURE / ALARM |
+| 当前工作区 | FreeRTOS V10.5.1 多任务迁移：任务拆分、事件队列、I2C / OLED 互斥、中断约束、裸机回退开关 |
 
-ML 指标（历史 TF 管线报告，485 样本 / 388 训练 / 97 测试）：Accuracy 0.938、Recall 1.000、F1 0.900。TF 管线（`train.py` + STM32Cube.AI 路线）已删除——它与 sklearn 管线写同一个 `scaler_params.h` 但符号不兼容；现行唯一管线为 `v1_train/train_sklearn.py`（结构 10→16→8→1，与部署的 `ml_inference.h` 一致），最新指标以重新运行 `train_sklearn.py` 输出的分类报告为准。
+---
 
-上一版 943 行的 README（含逐条调试记录、AT 交互日志、排障问答）未删除，归档在 `docs/README_v0.6_legacy.md`。
+## 许可证与第三方组件
 
-## 许可证
+本项目为个人 / 课程项目，**暂未指定正式开源许可证**。仓库包含以下第三方组件，使用时请遵守其各自许可：
 
-课程/个人项目，暂未指定正式许可证。ST 标准外设库版权归 STMicroelectronics；SSD1306、MPU6050 驱动源自公开教学例程并重写。
+- FreeRTOS Kernel：MIT（见 [FreeRTOS/LICENSE.md](FreeRTOS/LICENSE.md)）；
+- STM32F4xx 标准外设库：STMicroelectronics 许可；
+- SSD1306、MPU6050 等驱动参考公开教学例程后重写。
+
+如需将本项目代码用于商业用途，请先确认上述组件的许可条款。
