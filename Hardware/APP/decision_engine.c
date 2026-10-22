@@ -36,19 +36,65 @@ static float        s_dist_prev    = 0.0f;
 static uint8_t      s_intrusion_hit = 0;   /* 连续命中计数：单次误报会被过滤 */
 
 /* ========== 固定阈值兜底 ========== */
-#define INTRUSION_DIST_HARD    40.0f    /* 硬阈值：<40cm 直接告警，不经过 AI */
+#define INTRUSION_DIST_HARD    40.0f    /* 硬阈值：仅在静息距离无效时退回使用 */
 #define INTRUSION_DIST_SOFT    120.0f   /* 软阈值：40-120cm 交给 AI 辅助判断 */
-#define INTRUSION_DELTA_CM     20.0f    /* 距离突变兜底 */
+#define INTRUSION_DELTA_CM     20.0f    /* 距离突变兜底（一周期内骤降） */
+#define INTRUSION_NEAR_CM      8.0f     /* 极近直通：贴到探头 8cm 内当周期即报，
+                                          不等双确认（防的就是野值，近到这程度
+                                          只可能是真实伸入，演示手感即时） */
+
+/* ========== 布防静息距离（v0.7.3：纸箱/近墙安装场景适配） ==========
+   旧逻辑"distance<40cm 绝对告警"在传感器装进纸箱（箱壁 20~40cm）、
+   紧贴墙面等"静息目标本来就很近"的部署中会持续误报。
+   改为：每次进入 AWAY 先采 ARM_SAMPLE_N 个距离样本（决策周期 1s，约 10s
+   布防缓冲），取中位数作为"静息距离"，之后只有目标比静息位置明显逼近
+   才告警——箱壁/墙是静息不报警，手伸入造成距离骤减才报。 */
+#define ARM_SAMPLE_N           10       /* 静息采样个数（决策周期 1s，=10s 布防缓冲） */
+#define ARM_APPROACH_CM        15.0f    /* 比静息距离近多少 cm 判定"逼近" */
+
+static uint8_t s_arm_phase  = 1;        /* 1=静息采集中(不判入侵)  0=已武装 */
+static float   s_arm_buf[ARM_SAMPLE_N];
+static uint8_t s_arm_n      = 0;
+static float   s_dist_rest  = -1.0f;    /* 静息距离中位数；<0=无效，退回硬阈值 */
+
+/* 5 元素中位数（简单排序，样本少无需复杂算法；中位数抗瞬间遮挡） */
+static float arm_median(float *x)
+{
+    float t[ARM_SAMPLE_N];
+    uint8_t i, j;
+    for (i = 0; i < ARM_SAMPLE_N; i++) t[i] = x[i];
+    for (i = 0; i < ARM_SAMPLE_N - 1; i++) {
+        for (j = (uint8_t)(i + 1); j < ARM_SAMPLE_N; j++) {
+            if (t[j] < t[i]) {
+                float tmp = t[i];
+                t[i] = t[j];
+                t[j] = tmp;
+            }
+        }
+    }
+    return t[ARM_SAMPLE_N / 2];
+}
 
 void DecisionEngine_Init(void)
 {
     s_mode        = MODE_HOME;
     s_alert_last  = ALERT_NONE;
     s_dist_prev   = 0.0f;
+    s_arm_phase   = 1;       /* 上电默认先走一次静息采样 */
+    s_arm_n       = 0;
+    s_dist_rest   = -1.0f;
 
 #if defined(USE_ML) && USE_ML
     USART1_SendString("[AI] TinyML MLP (10->16->1) 已启用\r\n");
 #endif
+}
+
+void DecisionEngine_RestartArm(void)
+{
+    s_arm_phase     = 1;
+    s_arm_n         = 0;
+    s_dist_rest     = -1.0f;
+    s_intrusion_hit = 0;
 }
 
 void DecisionEngine_SetMode(Guard_Mode_t mode)
@@ -67,6 +113,15 @@ void DecisionEngine_SetMode(Guard_Mode_t mode)
         LED_OFF(2);
         s_alert_last  = ALERT_NONE;
         s_dist_prev   = 0.0f;
+        /* 每次重新布防（切回 AWAY）都重新采集静息距离，
+           给操作者约 10s 撤离，同时适配新的安装位置 */
+        if (mode == MODE_AWAY) {
+            s_arm_phase     = 1;
+            s_arm_n         = 0;
+            s_dist_rest     = -1.0f;
+            s_intrusion_hit = 0;
+            USART1_SendString("[ARM] AWAY armed: 10s settling, please leave...\r\n");
+        }
     }
 }
 
@@ -76,16 +131,18 @@ Guard_Mode_t DecisionEngine_GetMode(void)
 }
 
 /**
-  * @brief  入侵判断 —— 规则优先 + AI 辅助
+  * @brief  入侵判断 —— 布防静息基准 + 规则 + AI 辅助
   *
-  *   硬阈值（距离 < 40cm）  → 直接 ALERT_INTRUSION，跳过 AI
-  *   AT 自适应触发          → 直接 ALERT_INTRUSION
-  *   边界地带（40-80cm）    → 调 ML 辅助判断（如果启用了）
-  *   兜底（距离突变 >20cm） → ALERT_INTRUSION
+  *   布防采样期（前 5 个周期，约 10s）→ 只记录静息距离，不判定
+  *   逼近静息（比静息近 >15cm 且 <120cm）→ ALERT_INTRUSION
+  *   边界地带（<120cm 且未逼近）        → 调 ML 辅助判断（如启用）
+  *   快速突变（一周期骤降 >20cm）       → ALERT_INTRUSION
+  *   静息无效时                          → 退回旧硬阈值 <40cm
   */
 static Alert_Type_t CheckIntrusion(const Sensor_Data_t *data)
 {
     Alert_Type_t raw = ALERT_NONE;
+    float delta;
 
     /* SLEEP 语义（v0.7.1）：睡眠=主人在家睡觉，超声波入侵关闭（起夜/翻身
        不应误报），这是与 HOME 的核心差异——HOME 同时关防拆和照明，
@@ -97,29 +154,54 @@ static Alert_Type_t CheckIntrusion(const Sensor_Data_t *data)
         return ALERT_NONE;
     }
 
-    /* ===== 1. AT 自适应阈值 ===== */
-    const AT_Baseline_t *bl = AT_GetBaseline();
-    if (bl && bl->is_learned)
+    /* ===== 0. 布防静息采样期：只学"无威胁时的距离"，不判入侵 =====
+       给操作者约 10s 撤离/关门；中位数滤掉瞬间遮挡。
+       纸箱演示时这一步学到的就是箱壁距离，之后箱壁不再被当成入侵者。 */
+    if (s_arm_phase)
     {
-        if (AT_CheckIntrusion(data, s_dist_prev, data->distance))
+        s_arm_buf[s_arm_n++] = data->distance;
+        USART1_Printf("[ARM] settling %d/%d dist=%.1fcm\r\n",
+                      (int)s_arm_n, ARM_SAMPLE_N, data->distance);
+        if (s_arm_n >= ARM_SAMPLE_N)
+        {
+            s_dist_rest = arm_median(s_arm_buf);
+            s_arm_phase = 0;
+            s_intrusion_hit = 0;
+            USART1_Printf("[ARM] armed OK, rest=%.1fcm, alarm when closer than %.1fcm\r\n",
+                          s_dist_rest, s_dist_rest - ARM_APPROACH_CM);
+        }
+        return ALERT_NONE;
+    }
+
+    delta = s_dist_prev - data->distance;
+
+    /* ===== 1. 逼近静息位置（替代旧的绝对 <40cm 硬阈值）=====
+       静止近物（箱壁/墙）= 静息，不报警；目标比静息再近 ARM_APPROACH_CM
+       且处于近距区才算入侵。静息无效（采样期一直读到 0 等异常）才退回旧硬阈值。
+       注：不再调用 AT_CheckIntrusion —— 其"距离<30cm 绝对兜底"在箱内会常报，
+       其"一周期突变 30cm"已被下方 20cm 突变兜底覆盖。 */
+    if (s_dist_rest > 0.0f)
+    {
+        if (data->distance + ARM_APPROACH_CM < s_dist_rest &&
+            data->distance < INTRUSION_DIST_SOFT)
+        {
+            raw = ALERT_INTRUSION;
+        }
+    }
+    else
+    {
+        if (data->distance < INTRUSION_DIST_HARD)
         {
             raw = ALERT_INTRUSION;
         }
     }
 
-    float delta = s_dist_prev - data->distance;
-
-    /* ===== 2. 硬阈值 ===== */
-    if (raw == ALERT_NONE && data->distance < INTRUSION_DIST_HARD)
-    {
-        raw = ALERT_INTRUSION;
-    }
-
-    /* ===== 3. 边界地带 → AI 辅助 ===== */
+    /* ===== 2. 边界地带 → AI 辅助 ===== */
     if (raw == ALERT_NONE && data->distance < INTRUSION_DIST_SOFT)
     {
 #if defined(USE_ML) && USE_ML
         {
+            const AT_Baseline_t *bl = AT_GetBaseline();
             float x_raw[4]  = { (float)data->light_adc, data->distance, data->temperature, data->humidity };
             float baseline[4];
             baseline[0] = bl && bl->is_learned ? bl->light_ewma  : 1200.0f;
@@ -135,13 +217,22 @@ static Alert_Type_t CheckIntrusion(const Sensor_Data_t *data)
 #endif
     }
 
-    /* ===== 4. 兜底：距离突变 ===== */
+    /* ===== 3. 兜底：距离快速突变（手快速伸入，一周期内骤降 >20cm）===== */
     if (raw == ALERT_NONE && delta > INTRUSION_DELTA_CM && data->distance < INTRUSION_DIST_SOFT)
     {
         raw = ALERT_INTRUSION;
     }
 
     /* ===== 连续确认：2 次命中才触发，单次误报过滤 ===== */
+
+    /* 极近直通：已命中且距离 <=8cm，当周期立即告警，跳过双确认 */
+    if (raw == ALERT_INTRUSION && data->distance > 0.0f &&
+        data->distance <= INTRUSION_NEAR_CM)
+    {
+        s_intrusion_hit = 0;
+        return ALERT_INTRUSION;
+    }
+
     if (raw == ALERT_INTRUSION) {
         if (s_intrusion_hit < 5) s_intrusion_hit++;
     } else if (data->distance > INTRUSION_DIST_SOFT) {

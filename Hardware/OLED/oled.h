@@ -12,7 +12,7 @@
   *   MOSI       ->  T_MOSI            -> PF11  (GPIO, 非 SPI 复用)
   *   DC         ->  T_PEN             -> PB1   (触摸中断, 空闲 GPIO)
   *   CS1        ->  T_CS              -> PC13  (RTC, 需降速 2MHz)
-  *   CS2        ->  VCC (3.3V)        -> 🚨 务必接 VCC 禁用 GT20L1616 字库芯片！
+  *   CS2        ->  VCC (3.3V)        -> ?? 务必接 VCC 禁用 GT20L1616 字库芯片！
   *   FS0        ->  悬空              -> OLED 自己选 SPI 模式
   *
   * 致命坑 1：OLED 模块上 GT20L1616 字库芯片共享 SPI 总线！

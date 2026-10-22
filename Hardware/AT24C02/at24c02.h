@@ -24,7 +24,9 @@
 #define AT24C02_ADDR_W      0xA0
 #define AT24C02_ADDR_R      0xA1
 
-#define AT24C02_PAGE_SIZE   16      /* 页写缓冲 16 字节 */
+#define AT24C02_PAGE_SIZE   8       /* 经典 AT24C02 页写缓冲为 8 字节
+                                       （16 字节页的新型号同样兼容 8 字节块；
+                                        误设 16 在 8 字节页芯片上会回卷覆盖） */
 #define AT24C02_CAPACITY    256     /* 总容量 256 字节 */
 
 void    AT24C02_Init(void);                 /* 初始化（内含 IIC_Init，重复调用安全） */

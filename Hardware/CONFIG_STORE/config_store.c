@@ -103,8 +103,16 @@ uint8_t Config_Load(AT_Baseline_t *bl, Guard_Mode_t *mode)
         return 0;
     }
 
-    if (cfg.magic != CONFIG_MAGIC) return 0;
-    if (cfg.crc32 != Config_CalcCRC(&cfg)) return 0;
+    if (cfg.magic != CONFIG_MAGIC)
+    {
+        USART1_SendString("[CONFIG] magic mismatch (first learn or data erased)\r\n");
+        return 0;
+    }
+    if (cfg.crc32 != Config_CalcCRC(&cfg))
+    {
+        USART1_SendString("[CONFIG] CRC mismatch (EEPROM data corrupted)\r\n");
+        return 0;
+    }
 
     Config_Unpack(&cfg, bl, mode);
     return 1;

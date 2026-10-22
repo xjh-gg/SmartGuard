@@ -34,7 +34,7 @@ static void home_cache_reset(void)
 
 /* ============ SPI 软件模拟发送 1 字节 ============
    SSD1306 SPI Mode 0: CLK idle LOW, 上升沿采样
-   ⚠️ F407 主频 168MHz，必须用 delay_us() 放慢时序！
+   ?? F407 主频 168MHz，必须用 delay_us() 放慢时序！
       用 __nop() 会太快，OLED 采样不到 = 黑屏 */
 static void OLED_WR_Byte(uint8_t dat, uint8_t cmd)
 {
@@ -392,7 +392,7 @@ void OLED_ShowStatusBar(Guard_Mode_t mode, const char *time_str, const char *wif
    |                                |   网络异常时整行换成 !OFFLINE! / !NO MQTT!
    |     ALL  OK                    |  page 2-3: 状态大字（视觉中心）
    | 26C  59%  GOOD                 |  page 4-5: 温度 湿度 空气结论(不给原始值)
-   | 140cm  ██████░░░░░░ |          |  page 6-7: 距离数字 + 进度条 + dist_base 刻度
+   | 140cm  ██████?????? |          |  page 6-7: 距离数字 + 进度条 + dist_base 刻度
    +--------------------------------+
 
    局部刷新：每行文本与缓存 strcmp 相同则不重绘；进度条仅长度/刻度

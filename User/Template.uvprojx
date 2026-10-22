@@ -337,9 +337,9 @@
             <v6Rtti>0</v6Rtti>
             <VariousControls>
               <MiscControls></MiscControls>
-              <Define>USE_STDPERIPH_DRIVER,STM32F40_41xxx</Define>
+              <Define>USE_STDPERIPH_DRIVER,STM32F40_41xxx,USE_FREERTOS=1</Define>
               <Undefine></Undefine>
-              <IncludePath>..\User;..\Library\inc;..\Core;..\Hardware\LED;..\Hardware\KEY;..\Hardware\Delay;..\Hardware\USART;..\Hardware\ADC;..\Hardware\PWM;..\Hardware\BEEP;..\Hardware\DHT11;..\Hardware\HCSR04;..\Hardware\OLED;..\Hardware\ESP8266;..\Hardware\APP;..\Hardware\ML;..\Hardware\RTC;..\Hardware\ML;..\Hardware\WDG;..\Hardware\CONFIG_STORE;..\Hardware\ESP32_CAM;..\Hardware\IIC;..\Hardware\MPU6050;..\Hardware\AT24C02;..\Hardware\W25QXX</IncludePath>
+              <IncludePath>..\User;..\Library\inc;..\Core;..\Hardware\LED;..\Hardware\KEY;..\Hardware\Delay;..\Hardware\USART;..\Hardware\ADC;..\Hardware\PWM;..\Hardware\BEEP;..\Hardware\DHT11;..\Hardware\HCSR04;..\Hardware\OLED;..\Hardware\ESP8266;..\Hardware\APP;..\Hardware\ML;..\Hardware\RTC;..\Hardware\ML;..\Hardware\WDG;..\Hardware\CONFIG_STORE;..\Hardware\ESP32_CAM;..\Hardware\IIC;..\Hardware\MPU6050;..\Hardware\AT24C02;..\Hardware\W25QXX;..\FreeRTOS;..\FreeRTOS\include;..\FreeRTOS\portable\RVDS\ARM_CM4F</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -624,16 +624,6 @@
               <FilePath>..\Hardware\APP\adaptive_threshold.h</FilePath>
             </File>
             <File>
-              <FileName>scheduler.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\Hardware\APP\scheduler.c</FilePath>
-            </File>
-            <File>
-              <FileName>scheduler.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\Hardware\APP\scheduler.h</FilePath>
-            </File>
-            <File>
               <FileName>iwdg.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Hardware\WDG\iwdg.c</FilePath>
@@ -732,6 +722,46 @@
               <FileName>mpu6050.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\Hardware\MPU6050\mpu6050.h</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>FreeRTOS</GroupName>
+          <Files>
+            <File>
+              <FileName>tasks.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\FreeRTOS\tasks.c</FilePath>
+            </File>
+            <File>
+              <FileName>queue.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\FreeRTOS\queue.c</FilePath>
+            </File>
+            <File>
+              <FileName>list.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\FreeRTOS\list.c</FilePath>
+            </File>
+            <File>
+              <FileName>heap_4.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\FreeRTOS\portable\MemMang\heap_4.c</FilePath>
+            </File>
+            <File>
+              <FileName>port.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\FreeRTOS\portable\RVDS\ARM_CM4F\port.c</FilePath>
+            </File>
+            <File>
+              <FileName>FreeRTOSConfig.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\FreeRTOS\FreeRTOSConfig.h</FilePath>
+            </File>
+            <File>
+              <FileName>portmacro.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\FreeRTOS\portable\RVDS\ARM_CM4F\portmacro.h</FilePath>
             </File>
           </Files>
         </Group>

@@ -3,7 +3,7 @@
   * @file    rtc.h
   * @brief   RTC 实时时钟驱动 —— LSE/LSI 自动降级 + Wakeup Timer 秒中断
   *
-  *  ⚠️ 函数名加 SG_ 前缀避免与 ST 标准库 rtc.h 冲突：
+  *  ?? 函数名加 SG_ 前缀避免与 ST 标准库 rtc.h 冲突：
   *     - ST 库有 RTC_Init(RTC_InitTypeDef*) 和 RTC_GetTime(Format, Time*)
   *     - 本模块用 SG_RTC_Init() / SG_RTC_GetTime(RTC_DateTime_t*)
   *
@@ -66,9 +66,9 @@ void SG_RTC_GetTime(RTC_DateTime_t *dt);
   * @brief  配置 Wakeup Timer 每秒触发一次 EXTI Line22 中断
   * @param  callback  每秒回调函数指针（可为 NULL）
   *
-  *  ⚠️ EXTI Line22 是 RTC_WKUP 专用线（不是 Line20 USB HS / Line17 AlarmA）
-  *  ⚠️ 写 WUTR 前必须等 WUTWF 置位
-  *  ⚠️ 计数器 0 → (0+1)/ck_spre = 1 秒（ck_spre 由预分频器降至 1Hz）
+  *  ?? EXTI Line22 是 RTC_WKUP 专用线（不是 Line20 USB HS / Line17 AlarmA）
+  *  ?? 写 WUTR 前必须等 WUTWF 置位
+  *  ?? 计数器 0 → (0+1)/ck_spre = 1 秒（ck_spre 由预分频器降至 1Hz）
   */
 void SG_RTC_SetWakeup1s(void (*callback)(void));
 

@@ -1,11 +1,13 @@
 /**
   ******************************************************************************
   * @file    esp8266.c
-  * @brief   ESP8266 WiFi Ä£¿éÇý¶¯ÊµÏÖ£¨UDP Êý¾ÝÉÏ±¨£©
+  * @brief   ESP8266 WiFi Ä£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Êµï¿½Ö£ï¿½AT Ö¸ï¿½ï¿½ + ï¿½ï¿½Ð´ MQTT 3.1.1ï¿½ï¿½
   *
-  * ËµÃ÷£º
-  *   ËùÓÐ AT Ö¸Áî¾ùÍ¨¹ý USART3 ·¢ËÍ£¬ESP8266 Ó¦´ðÒ²¾­ USART3 ½ÓÊÕ¡£
-  *   ½ÓÊÕ²ÉÓÃÖÐ¶Ï + »·ÐÎ»º³åÇø£¬Ö÷Ñ­»·Í¨¹ý USART3_GetByte ¶ÁÈ¡¡£
+  * Ëµï¿½ï¿½ï¿½ï¿½
+  *   ï¿½ï¿½ï¿½ï¿½ AT Ö¸ï¿½ï¿½ï¿½Í¨ï¿½ï¿½ USART3 ï¿½ï¿½ï¿½Í£ï¿½ESP8266 Ó¦ï¿½ï¿½Ò²ï¿½ï¿½ USART3 ï¿½ï¿½ï¿½Õ¡ï¿½
+  *   ï¿½ï¿½ï¿½Õ²ï¿½ï¿½ï¿½ï¿½Ð¶ï¿½ + ï¿½ï¿½ï¿½Î»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ñ­ï¿½ï¿½Í¨ï¿½ï¿½ USART3_GetByte ï¿½ï¿½È¡ï¿½ï¿½
+  *   MQTT ï¿½ï¿½ï¿½ï¿½ï¿½Ú±ï¿½ï¿½Ä¼ï¿½ï¿½Ö¹ï¿½ï¿½ï¿½Ö¡ï¿½ï¿½ï¿½Ì¶ï¿½Í·/Ê£ï¿½à³¤ï¿½ï¿½/ï¿½É±ï¿½Í·/payloadï¿½ï¿½ï¿½ï¿½
+  *   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ +IPD Ç°×ºï¿½ï¿½ï¿½ï¿½ + MQTT ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½×´Ì¬ï¿½ï¿½ï¿½ï¿½Î´ï¿½ï¿½ï¿½Îºï¿½ï¿½Ö³ï¿½ SDKï¿½ï¿½
   ******************************************************************************
   */
 #include "esp8266.h"
@@ -17,23 +19,27 @@
 
 #define U1_PRINTF  USART1_Printf   /* easy to switch to USART2/other UART for debugging */
 
-/* ÒÖÖÆ #236-D: controlling expression is constant
-   Ô­Òò£ºMQTT_OnCmdReceived º¯ÊýÖ¸ÕëÊÇÁ´½ÓÆÚ³£Á¿£¬±àÒëÆ÷±£ÊØÅÐ¶Ï */
+/* ï¿½ï¿½ï¿½ï¿½ #236-D: controlling expression is constant
+   Ô­ï¿½ï¿½MQTT_OnCmdReceived ï¿½ï¿½ï¿½ï¿½Ö¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ú³ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð¶ï¿½ */
 #pragma diag_suppress 236
 
-static uint8_t  s_send_fail_count = 0;  /* Á¬Ðø·¢ËÍÊ§°Ü¼ÆÊý£¬ÓÃÓÚ½¡¿µ¼ì²é */
-static volatile uint8_t s_wifi_ok = 0;  /* WiFi Á¬½Ó×´Ì¬£¬¹© OLED ×´Ì¬À¸¶ÁÈ¡ */
-static uint8_t  s_mqtt_ok = 0;          /* MQTT ÎÕÊÖÍê³É±êÖ¾£¨CONNECT+SUBSCRIBE ¶¼³É¹¦£© */
+static uint8_t  s_send_fail_count = 0;  /* ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê§ï¿½Ü¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ú½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
+static volatile uint8_t s_wifi_ok = 0;  /* WiFi ï¿½ï¿½ï¿½ï¿½×´Ì¬ï¿½ï¿½ï¿½ï¿½ OLED ×´Ì¬ï¿½ï¿½ï¿½ï¿½È¡ */
+static uint8_t  s_mqtt_ok = 0;          /* MQTT ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É±ï¿½Ö¾ï¿½ï¿½CONNECT+SUBSCRIBE ï¿½ï¿½ï¿½É¹ï¿½ï¿½ï¿½ */
 
-/* ÏÂÐÐ +IPD Ö¡½âÎöÆ÷µÄ×Ö½ÚÈë¿Ú£¬±¾ÌåÔÚÎÄ¼þÄ©Î²µÄ MQTT Çø¡£
-   ÌáÇ°ÉùÃ÷ÊÇÒòÎª ESP8266_SendTCP() ·¢ËÍÇ°Ò²Òªµ÷Ëü£¬°ÑÒÑµ½´ïµÄÏÂÐÐÖ¡
-   Î¹½ø½âÎöÆ÷¶ø²»ÊÇÖ±½Ó¶ªÆú¡£ */
+/* ï¿½ï¿½ï¿½ï¿½ +IPD Ö¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö½ï¿½ï¿½ï¿½Ú£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä¼ï¿½Ä©Î²ï¿½ï¿½ MQTT ï¿½ï¿½ï¿½ï¿½
+   ï¿½ï¿½Ç°ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Îª ESP8266_SendTCP() ï¿½ï¿½ï¿½ï¿½Ç°Ò²Òªï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ñµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¡
+   Î¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö±ï¿½Ó¶ï¿½ï¿½ï¿½ï¿½ï¿½ */
 static void MQTT_FeedByte(uint8_t ch);
 
-/* AT µÈ´ý¼äÏ¶»Øµ÷£¨P3-#4 ÕÛÖÐ·½°¸£©£ºbroker å´»úÊ± publish Â·¾¶µÄÍêÕûÖØÁ¬
-   ×î»µ×èÈû ~15s£¨CIPSTART 10s Ö÷µ¼£©£¬Ð­×÷Ê½µ÷¶ÈÆ÷ÕûÌå¶³½á£¬·À²ð 5Hz
-   ²ÉÑù»áÍ£¡£ÔÚµÈ´ýÑ­»·ÀïÃ¿ 200ms µ÷Ò»´Î±¾¹³×Ó£¬main ×¢²áËüÐø²É·À²ð£¬
-   ¶³½áÆÚ¼äµÄ»Î¶¯¼ì²â²»¶ª¡£¹·±¾À´¾ÍÎ¹£¨SendAT Ã¿ 1ms IWDG_Feed£©¡£ */
+/* Consecutive full-reconnect failures: drives escalating backoff
+   (5s -> 15s -> 60s) and, after 2 strikes, WiFi re-association / module reset. */
+static uint8_t  s_reconnect_streak = 0;
+
+/* AT ï¿½È´ï¿½ï¿½ï¿½Ï¶ï¿½Øµï¿½ï¿½ï¿½P3-#4 ï¿½ï¿½ï¿½Ð·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½broker å´»ï¿½Ê± publish Â·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+   ï¿½î»µï¿½ï¿½ï¿½ï¿½ ~15sï¿½ï¿½CIPSTART 10s ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð­ï¿½ï¿½Ê½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½å¶³ï¿½á£¬ï¿½ï¿½ï¿½ï¿½ 5Hz
+   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í£ï¿½ï¿½ï¿½ÚµÈ´ï¿½Ñ­ï¿½ï¿½ï¿½ï¿½Ã¿ 200ms ï¿½ï¿½Ò»ï¿½Î±ï¿½ï¿½ï¿½ï¿½Ó£ï¿½main ×¢ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É·ï¿½ï¿½ï¿½
+   ï¿½ï¿½ï¿½ï¿½ï¿½Ú¼ï¿½Ä»Î¶ï¿½ï¿½ï¿½â²»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î¹ï¿½ï¿½SendAT Ã¿ 1ms IWDG_Feedï¿½ï¿½ï¿½ï¿½ */
 static void (*s_wait_hook)(void) = 0;
 static uint32_t s_hook_last = 0;
 
@@ -52,9 +58,9 @@ static void WaitHook_Tick(void)
 }
 
 /**
-  * @brief  ³õÊ¼»¯ ESP8266 Í¨ÐÅ½Ó¿Ú²¢Á¬½Ó WiFi
-  * @note   ÏÈ 115200 ²¨ÌØÂÊÌ½²â£¬Ê§°ÜÔò½µ¼¶ 9600£»ÔÙ²â AT¡¢Á¬ WiFi¡¢¿ÉÑ¡Á¬ UDP
-  * @retval 1 = WiFi Á¬½Ó³É¹¦£¬0 = Ê§°Ü
+  * @brief  ï¿½ï¿½Ê¼ï¿½ï¿½ ESP8266 Í¨ï¿½Å½Ó¿Ú²ï¿½ï¿½ï¿½ï¿½ï¿½ WiFi
+  * @note   ï¿½ï¿½ 115200 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ì½ï¿½â£¬Ê§ï¿½ï¿½ï¿½ò½µ¼ï¿½ 9600ï¿½ï¿½ï¿½Ù²ï¿½ ATï¿½ï¿½ï¿½ï¿½ WiFiï¿½ï¿½ï¿½ï¿½Ñ¡ï¿½ï¿½ UDP
+  * @retval 1 = WiFi ï¿½ï¿½ï¿½Ó³É¹ï¿½ï¿½ï¿½0 = Ê§ï¿½ï¿½
   */
 uint8_t ESP8266_Init(void)
 {
@@ -63,13 +69,13 @@ uint8_t ESP8266_Init(void)
 
     U1_PRINTF("[ESP] --- ESP8266_Init start ---\r\n");
 
-    /* 1. ²¨ÌØÂÊÌ½²â£ºÏÈÊÔ 115200£¬²»ÐÐÔÙ½µ¼¶ 9600 */
+    /* 1. ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ì½ï¿½â£ºï¿½ï¿½ï¿½ï¿½ 115200ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ù½ï¿½ï¿½ï¿½ 9600 */
     for (baud = 115200; baud >= 9600; baud = (baud == 115200) ? 9600 : 0)
     {
         if (baud == 0) break;
         U1_PRINTF("[ESP] trying USART3 @ %lu baud...\r\n", baud);
         USART3_Init(baud);
-        delay_ms(200);   /* µÈ USART ÎÈ¶¨ */
+        delay_ms(200);   /* ï¿½ï¿½ USART ï¿½È¶ï¿½ */
         USART3_FlushRx();
 
         if (ESP8266_SendAT("AT\r\n", "OK", 3000))
@@ -83,10 +89,10 @@ uint8_t ESP8266_Init(void)
 
     if (!at_ok)
     {
-        /* Ä£¿éÉÏµçÆô¶¯¿ÉÄÜ±È STM32 Âý£¨ESP8266 ×ÔÉí boot Ðè ~1-2s£©£º
-           µÈ 2s ²¹Ò»ÂÖÌ½²âÔÙÐûÅÐ£¬±ÜÃâ¿ª»ú¼´½øÈëÀëÏßÄ£Ê½£¨Êµ²â¸´ÏÖ£©¡£
-           ±ØÐë·Ö¶ÎÎ¹¹·£º±¾º¯ÊýÔÚÔËÐÐÆÚ CheckHealth¡úre-init Â·¾¶Ò²¿É´ï£¬
-           Õû¶Î delay_ms(2000) Ç¡ºÃµÈÓÚ IWDG ´°¿Ú£¬±ØÒ§£¨Í¬ Reset µÄ½ÌÑµ£©¡£ */
+        /* Ä£ï¿½ï¿½ï¿½Ïµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ü±ï¿½ STM32 ï¿½ï¿½ï¿½ï¿½ESP8266 ï¿½ï¿½ï¿½ï¿½ boot ï¿½ï¿½ ~1-2sï¿½ï¿½ï¿½ï¿½
+           ï¿½ï¿½ 2s ï¿½ï¿½Ò»ï¿½ï¿½Ì½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð£ï¿½ï¿½ï¿½ï¿½â¿ªï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä£Ê½ï¿½ï¿½Êµï¿½â¸´ï¿½Ö£ï¿½ï¿½ï¿½
+           ï¿½ï¿½ï¿½ï¿½Ö¶ï¿½Î¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ CheckHealthï¿½ï¿½re-init Â·ï¿½ï¿½Ò²ï¿½É´ï£¬
+           ï¿½ï¿½ï¿½ï¿½ delay_ms(2000) Ç¡ï¿½Ãµï¿½ï¿½ï¿½ IWDG ï¿½ï¿½ï¿½Ú£ï¿½ï¿½ï¿½Ò§ï¿½ï¿½Í¬ Reset ï¿½Ä½ï¿½Ñµï¿½ï¿½ï¿½ï¿½ */
         U1_PRINTF("[ESP] no response, module may still be booting, retry in 2s...\r\n");
         for (uint8_t i = 0; i < 20; i++)
         {
@@ -116,7 +122,7 @@ uint8_t ESP8266_Init(void)
         return 0;
     }
 
-    /* 2. Èí¼þ¸´Î»Ò»´Î£¬È·±£¸É¾»×´Ì¬£¬ÔÙÑéÒ»´Î AT */
+    /* 2. ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î»Ò»ï¿½Î£ï¿½È·ï¿½ï¿½ï¿½É¾ï¿½×´Ì¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ AT */
     U1_PRINTF("[ESP] resetting module...\r\n");
     ESP8266_Reset();
     delay_ms(500);
@@ -128,7 +134,7 @@ uint8_t ESP8266_Init(void)
         return 0;
     }
 
-    /* 3. Á¬½Ó WiFi */
+    /* 3. ï¿½ï¿½ï¿½ï¿½ WiFi */
     U1_PRINTF("[ESP] connecting WiFi SSID=\"%s\"...\r\n", WIFI_SSID);
     if (!ESP8266_ConnectAP(WIFI_SSID, WIFI_PASSWORD))
     {
@@ -143,13 +149,13 @@ uint8_t ESP8266_Init(void)
     else if (!ESP8266_MQTTSubscribe())
         U1_PRINTF("[MQTT] Subscribe FAIL\r\n");
     else {
-        s_mqtt_ok = 1;   /* CONNECT + SUBSCRIBE ¶¼³É¹¦£¬MQTT »á»°¾ÍÐ÷ */
+        s_mqtt_ok = 1;   /* CONNECT + SUBSCRIBE ï¿½ï¿½ï¿½É¹ï¿½ï¿½ï¿½MQTT ï¿½á»°ï¿½ï¿½ï¿½ï¿½ */
         U1_PRINTF("[MQTT] Init OK (session ready)\r\n");
-        MQTT_ReportLightStatus();    /* Ê×´Î»á»°¾ÍÐ÷ºóÖ÷¶¯ÉÏ±¨µÆ×´Ì¬£¨broker retain£© */
-        MQTT_ReportModeStatus();   /* Ê×´Î»á»°¾ÍÐ÷ºóÖ÷¶¯ÉÏ±¨Ä£Ê½×´Ì¬£¨broker retain£© */
+        MQTT_ReportLightStatus();    /* ï¿½×´Î»á»°ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï±ï¿½ï¿½ï¿½×´Ì¬ï¿½ï¿½broker retainï¿½ï¿½ */
+        MQTT_ReportModeStatus();   /* ï¿½×´Î»á»°ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï±ï¿½Ä£Ê½×´Ì¬ï¿½ï¿½broker retainï¿½ï¿½ */
     }
 #else
-    /* 3. ½¨Á¢ UDP Á¬½Óµ½µçÄÔ£¨ÓÃÓÚÍÆ¸æ¾¯£© */
+    /* 3. ï¿½ï¿½ï¿½ï¿½ UDP ï¿½ï¿½ï¿½Óµï¿½ï¿½ï¿½ï¿½Ô£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Æ¸æ¾¯ï¿½ï¿½ */
     U1_PRINTF("[...] ESP8266 connecting UDP to %s:%d...\r\n",
               ESP8266_UDP_SERVER_IP, ESP8266_UDP_SERVER_PORT);
     if (ESP8266_ConnectUDP(ESP8266_UDP_SERVER_IP, ESP8266_UDP_SERVER_PORT))
@@ -162,15 +168,15 @@ uint8_t ESP8266_Init(void)
     }
 #endif
 
-    return 1;   /* WiFi ÒÑÁ¬ÉÏ£¬UDP Ê§°Ü²»×èÈûÖ÷Á÷³Ì */
+    return 1;   /* WiFi ï¿½ï¿½ï¿½ï¿½ï¿½Ï£ï¿½UDP Ê§ï¿½Ü²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
 }
 
 /**
-  * @brief  ·¢ËÍ AT Ö¸Áî²¢µÈ´ýÖ¸¶¨Ó¦´ð£¨´øÍêÕûµ÷ÊÔÈÕÖ¾£©
-  * @param  cmd:    Òª·¢ËÍµÄ AT Ö¸Áî×Ö·û´®£¨ÐèÒÑ°üº¬ \r\n£©
-  * @param  ack:    ÆÚÍûÊÕµ½µÄÓ¦´ð×Ö·û´®£¬NULL ±íÊ¾²»µÈ´ýÓ¦´ð
-  * @param  timeout_ms: ³¬Ê±Ê±¼ä£¨ºÁÃë£©
-  * @retval 1 = ÊÕµ½Ó¦´ð£¬0 = ³¬Ê±
+  * @brief  ï¿½ï¿½ï¿½ï¿½ AT Ö¸ï¿½î²¢ï¿½È´ï¿½Ö¸ï¿½ï¿½Ó¦ï¿½ð£¨´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¾ï¿½ï¿½
+  * @param  cmd:    Òªï¿½ï¿½ï¿½Íµï¿½ AT Ö¸ï¿½ï¿½ï¿½Ö·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ñ°ï¿½ï¿½ï¿½ \r\nï¿½ï¿½
+  * @param  ack:    ï¿½ï¿½ï¿½ï¿½ï¿½Õµï¿½ï¿½ï¿½Ó¦ï¿½ï¿½ï¿½Ö·ï¿½ï¿½ï¿½ï¿½ï¿½NULL ï¿½ï¿½Ê¾ï¿½ï¿½ï¿½È´ï¿½Ó¦ï¿½ï¿½
+  * @param  timeout_ms: ï¿½ï¿½Ê±Ê±ï¿½ä£¨ï¿½ï¿½ï¿½ë£©
+  * @retval 1 = ï¿½Õµï¿½Ó¦ï¿½ï¿½0 = ï¿½ï¿½Ê±
   */
 uint8_t ESP8266_SendAT(char *cmd, char *ack, uint16_t timeout_ms)
 {
@@ -222,7 +228,7 @@ uint8_t ESP8266_SendAT(char *cmd, char *ack, uint16_t timeout_ms)
 }
 
 /**
-  * @brief  Èí¼þ¸´Î» ESP8266
+  * @brief  ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î» ESP8266
   */
 void ESP8266_Reset(void)
 {
@@ -230,11 +236,11 @@ void ESP8266_Reset(void)
 
     ESP8266_SendAT("AT+RST\r\n", "ready", 3000);
 
-    /* ¸´Î»ºóÐèÒªµÈ´ýÆô¶¯Íê³É¡£±ØÐë·Ö¶ÎÎ¹¹·£ºIWDG ³¬Ê±ÕýºÃÊÇ 2000ms£¬
-       Õû¶Î delay_ms(2000) ÁãÓàÁ¿ÁãÎ¹¹·¡£ÀäÆô¶¯Ê±ÎÞº¦£¨IWDG_Init ÔÚ
-       »ùÏßÑ§Ï°Ö®ºó²ÅÖ´ÐÐ£©£¬µ« IWDG Ò»µ©Æô¶¯Ö»ÄÜ¿¿µôµç¹Ø±Õ£¬ÈÈ¸´Î»
-       £¨RESET ¼ü / ÖØÐÂÉÕÂ¼²»¶Ïµç£©ºóËüÈÔÔÚÅÜ£¬Õâ 2 Ãë±ØÈ»±»Ò§ËÀ£¬
-       ÓÚÊÇÃ¿´ÎÈÈ¸´Î»¶¼±ä³É¿ª»úËÀÑ­»·£¨Êµ²â£º+0.41/+2.40/+4.38s ÈýÌõ banner£©¡£ */
+    /* ï¿½ï¿½Î»ï¿½ï¿½ï¿½ï¿½Òªï¿½È´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É¡ï¿½ï¿½ï¿½ï¿½ï¿½Ö¶ï¿½Î¹ï¿½ï¿½ï¿½ï¿½IWDG ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ 2000msï¿½ï¿½
+       ï¿½ï¿½ï¿½ï¿½ delay_ms(2000) ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½Þºï¿½ï¿½ï¿½IWDG_Init ï¿½ï¿½
+       ï¿½ï¿½ï¿½ï¿½Ñ§Ï°Ö®ï¿½ï¿½ï¿½Ö´ï¿½Ð£ï¿½ï¿½ï¿½ï¿½ï¿½ IWDG Ò»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö»ï¿½Ü¿ï¿½ï¿½ï¿½ï¿½ï¿½Ø±Õ£ï¿½ï¿½È¸ï¿½Î»
+       ï¿½ï¿½RESET ï¿½ï¿½ / ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Â¼ï¿½ï¿½ï¿½Ïµç£©ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ü£ï¿½ï¿½ï¿½ 2 ï¿½ï¿½ï¿½È»ï¿½ï¿½Ò§ï¿½ï¿½ï¿½ï¿½
+       ï¿½ï¿½ï¿½ï¿½Ã¿ï¿½ï¿½ï¿½È¸ï¿½Î»ï¿½ï¿½ï¿½ï¿½É¿ï¿½ï¿½ï¿½ï¿½ï¿½Ñ­ï¿½ï¿½ï¿½ï¿½Êµï¿½â£º+0.41/+2.40/+4.38s ï¿½ï¿½ï¿½ï¿½ bannerï¿½ï¿½ï¿½ï¿½ */
     for (i = 0; i < 20; i++)
     {
         delay_ms(100);
@@ -243,11 +249,11 @@ void ESP8266_Reset(void)
 }
 
 /**
-  * @brief  ÉèÖÃ ESP8266 ¹¤×÷Ä£Ê½£¨´ø¹Ì¼þ°æ±¾ fallback£©
+  * @brief  ï¿½ï¿½ï¿½ï¿½ ESP8266 ï¿½ï¿½ï¿½ï¿½Ä£Ê½ï¿½ï¿½ï¿½ï¿½ï¿½Ì¼ï¿½ï¿½æ±¾ fallbackï¿½ï¿½
   * @param  mode: 1=STA  Station Ä£Ê½
   *              2=AP   Access Point Ä£Ê½
-  *              3=AP+STA »ìºÏÄ£Ê½
-  * @note   ÐÂ°æ¹Ì¼þÓÃ CWMODE_CUR£¬ÀÏ¹Ì¼þÖ»ÈÏ CWMODE£¨ÎÞºó×º£©
+  *              3=AP+STA ï¿½ï¿½ï¿½Ä£Ê½
+  * @note   ï¿½Â°ï¿½Ì¼ï¿½ï¿½ï¿½ CWMODE_CURï¿½ï¿½ï¿½Ï¹Ì¼ï¿½Ö»ï¿½ï¿½ CWMODEï¿½ï¿½ï¿½Þºï¿½×ºï¿½ï¿½
   */
 uint8_t ESP8266_SetMode(uint8_t mode)
 {
@@ -268,15 +274,15 @@ uint8_t ESP8266_SetMode(uint8_t mode)
 }
 
 /**
-  * @brief  STA Ä£Ê½Á¬½ÓÖ¸¶¨ WiFi£¨´ø¹Ì¼þ°æ±¾ fallback£©
-  * @note   ÐÂ°æ¹Ì¼þÓÃ CWJAP_CUR£¬ÀÏ¹Ì¼þÖ»ÈÏ CWJAP£¨ÎÞºó×º£©
+  * @brief  STA Ä£Ê½ï¿½ï¿½ï¿½ï¿½Ö¸ï¿½ï¿½ WiFiï¿½ï¿½ï¿½ï¿½ï¿½Ì¼ï¿½ï¿½æ±¾ fallbackï¿½ï¿½
+  * @note   ï¿½Â°ï¿½Ì¼ï¿½ï¿½ï¿½ CWJAP_CURï¿½ï¿½ï¿½Ï¹Ì¼ï¿½Ö»ï¿½ï¿½ CWJAPï¿½ï¿½ï¿½Þºï¿½×ºï¿½ï¿½
   */
 uint8_t ESP8266_ConnectAP(char *ssid, char *password)
 {
     char cmd[128];
     uint8_t ok;
 
-    /* 1. ÉèÖÃ STA Ä£Ê½£¨´ø fallback£© */
+    /* 1. ï¿½ï¿½ï¿½ï¿½ STA Ä£Ê½ï¿½ï¿½ï¿½ï¿½ fallbackï¿½ï¿½ */
     U1_PRINTF("[ESP] setting STA mode...\r\n");
     if (!ESP8266_SetMode(1))
     {
@@ -285,11 +291,11 @@ uint8_t ESP8266_ConnectAP(char *ssid, char *password)
         return 0;
     }
 
-    /* 2. ÏÈ¶Ï¿ªÉÏ´ÎÁ¬½Ó£¨·À WIFI DISCONNECT ²ÐÁô£© */
+    /* 2. ï¿½È¶Ï¿ï¿½ï¿½Ï´ï¿½ï¿½ï¿½ï¿½Ó£ï¿½ï¿½ï¿½ WIFI DISCONNECT ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
     ESP8266_SendAT("AT+CWQAP\r\n", "OK", 1000);
     delay_ms(200);
 
-    /* 3. ÏÈÊÔ CWJAP_CUR£¨ÐÂ¹Ì¼þ£©£¬Ê§°Ü fallback CWJAP£¨ÀÏ¹Ì¼þ£© */
+    /* 3. ï¿½ï¿½ï¿½ï¿½ CWJAP_CURï¿½ï¿½ï¿½Â¹Ì¼ï¿½ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½ fallback CWJAPï¿½ï¿½ï¿½Ï¹Ì¼ï¿½ï¿½ï¿½ */
     snprintf(cmd, sizeof(cmd), "AT+CWJAP_CUR=\"%s\",\"%s\"\r\n", ssid, password);
     U1_PRINTF("[ESP] trying CWJAP_CUR...\r\n");
     ok = ESP8266_SendAT(cmd, "OK", 15000);
@@ -314,8 +320,8 @@ uint8_t ESP8266_ConnectAP(char *ssid, char *password)
 }
 
 /**
-  * @brief  ²éÑ¯ WiFi ÊÇ·ñÔÚÏß£¨¹© OLED ×´Ì¬À¸µÈÖ»¶ÁÊ¹ÓÃ£©
-  * @retval 1=ÔÚÏß£¬0=µôÏß
+  * @brief  ï¿½ï¿½Ñ¯ WiFi ï¿½Ç·ï¿½ï¿½ï¿½ï¿½ß£ï¿½ï¿½ï¿½ OLED ×´Ì¬ï¿½ï¿½ï¿½ï¿½Ö»ï¿½ï¿½Ê¹ï¿½Ã£ï¿½
+  * @retval 1=ï¿½ï¿½ï¿½ß£ï¿½0=ï¿½ï¿½ï¿½ï¿½
   */
 uint8_t ESP8266_IsWiFiOk(void)
 {
@@ -323,8 +329,8 @@ uint8_t ESP8266_IsWiFiOk(void)
 }
 
 /**
-  * @brief  ²éÑ¯ MQTT »á»°ÊÇ·ñ¾ÍÐ÷£¨¹© OLED ×´Ì¬ÐÐµÈÖ»¶ÁÊ¹ÓÃ£©
-  * @retval 1=»á»°¾ÍÐ÷£¨CONNECT+SUBSCRIBE ³É¹¦ÇÒÎ´¶Ï£©£¬0=Î´¾ÍÐ÷
+  * @brief  ï¿½ï¿½Ñ¯ MQTT ï¿½á»°ï¿½Ç·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ OLED ×´Ì¬ï¿½Ðµï¿½Ö»ï¿½ï¿½Ê¹ï¿½Ã£ï¿½
+  * @retval 1=ï¿½á»°ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½CONNECT+SUBSCRIBE ï¿½É¹ï¿½ï¿½ï¿½Î´ï¿½Ï£ï¿½ï¿½ï¿½0=Î´ï¿½ï¿½ï¿½ï¿½
   */
 uint8_t ESP8266_IsMQTTOk(void)
 {
@@ -332,21 +338,21 @@ uint8_t ESP8266_IsMQTTOk(void)
 }
 
 /**
-  * @brief  UDP Á¬½Ó£¨µ¥Á¬½ÓÄ£Ê½£©
-  * @param  ip:   Ä¿±ê IP µØÖ·×Ö·û´®
-  * @param  port: Ä¿±ê¶Ë¿ÚºÅ
+  * @brief  UDP ï¿½ï¿½ï¿½Ó£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä£Ê½ï¿½ï¿½
+  * @param  ip:   Ä¿ï¿½ï¿½ IP ï¿½ï¿½Ö·ï¿½Ö·ï¿½ï¿½ï¿½
+  * @param  port: Ä¿ï¿½ï¿½Ë¿Úºï¿½
   */
 uint8_t ESP8266_ConnectUDP(char *ip, uint16_t port)
 {
     char cmd[128];
     uint8_t ok;
 
-    /* UDP Ê¹ÓÃµ¥Á¬½ÓÄ£Ê½ */
+    /* UDP Ê¹ï¿½Ãµï¿½ï¿½ï¿½ï¿½ï¿½Ä£Ê½ */
     U1_PRINTF("[...] ESP8266 AT+CIPMUX=0\r\n");
     ok = ESP8266_SendAT("AT+CIPMUX=0\r\n", "OK", 2000);
     U1_PRINTF("  -> CIPMUX=0 %s\r\n", ok ? "OK" : "FAIL");
     if (!ok) {
-        /* ¿ÉÄÜÒÑ¾­ÊÇ 0 ÁË£¬¼ÌÐø */
+        /* ï¿½ï¿½ï¿½ï¿½ï¿½Ñ¾ï¿½ï¿½ï¿½ 0 ï¿½Ë£ï¿½ï¿½ï¿½ï¿½ï¿½ */
     }
     delay_ms(200);
 
@@ -355,16 +361,16 @@ uint8_t ESP8266_ConnectUDP(char *ip, uint16_t port)
     ok = ESP8266_SendAT(cmd, "OK", 5000);
     U1_PRINTF("  -> CIPSTART UDP %s\r\n", ok ? "OK" : "FAIL (may be firewall, try anyway)");
 
-    /* ·µ»Ø CIPSTART µÄÕæÊµ½á¹û£¨Ô­ÊµÏÖºã·µ»Ø 1£¬Ê§°Ü±»ÑÚ¸Ç£©¡£
-       UDP ËäÎÞÁ¬½ÓÓïÒå¡¢Ê§°ÜºóÈÔ¿ÉÄÜ·¢³ö°ü£¬µ« AT Ê§°ÜÍ¨³£ÒâÎ¶×Å
-       Ä£¿é»ò²ÎÊýÒì³££¬µ÷ÓÃ·½£¨esp8266.c:107/1250 µÈ£©¾ùÓÐ 0/1 ·ÖÖ§´¦Àí */
+    /* ï¿½ï¿½ï¿½ï¿½ CIPSTART ï¿½ï¿½ï¿½ï¿½Êµï¿½ï¿½ï¿½ï¿½ï¿½Ô­Êµï¿½Öºã·µï¿½ï¿½ 1ï¿½ï¿½Ê§ï¿½Ü±ï¿½ï¿½Ú¸Ç£ï¿½ï¿½ï¿½
+       UDP ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½å¡¢Ê§ï¿½Üºï¿½ï¿½Ô¿ï¿½ï¿½Ü·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ AT Ê§ï¿½ï¿½Í¨ï¿½ï¿½ï¿½ï¿½Î¶ï¿½ï¿½
+       Ä£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ì³£ï¿½ï¿½ï¿½ï¿½ï¿½Ã·ï¿½ï¿½ï¿½esp8266.c:107/1250 ï¿½È£ï¿½ï¿½ï¿½ï¿½ï¿½ 0/1 ï¿½ï¿½Ö§ï¿½ï¿½ï¿½ï¿½ */
     return ok;
 }
 
 /**
-  * @brief  ·¢ËÍ UDP Êý¾Ý
-  * @param  data: Êý¾Ý»º³åÇø
-  * @param  len:  Êý¾Ý³¤¶È
+  * @brief  ï¿½ï¿½ï¿½ï¿½ UDP ï¿½ï¿½ï¿½ï¿½
+  * @param  data: ï¿½ï¿½ï¿½Ý»ï¿½ï¿½ï¿½ï¿½ï¿½
+  * @param  len:  ï¿½ï¿½ï¿½Ý³ï¿½ï¿½ï¿½
   */
 uint8_t ESP8266_SendUDP(uint8_t *data, uint16_t len)
 {
@@ -383,8 +389,8 @@ uint8_t ESP8266_SendUDP(uint8_t *data, uint16_t len)
         USART3_SendByte(data[i]);
     }
 
-    /* µÈ SEND OK£º·¢Íê×Ö½Ú²»µÈÓÚÄ£¿é½ÓÊÜ/·¢³ö£¨Óë SendTCP ¶ÔÆë£¬P3-#8£©¡£
-       Ô­ÊµÏÖ·¢ÍêÖ±½Ó±¨³É¹¦£¬Ä£¿é¾ÜÊÕÊ±¸æ¾¯¾²Ä¬¶ªÊ§ */
+    /* ï¿½ï¿½ SEND OKï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö½Ú²ï¿½ï¿½ï¿½ï¿½ï¿½Ä£ï¿½ï¿½ï¿½ï¿½ï¿½/ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ SendTCP ï¿½ï¿½ï¿½ë£¬P3-#8ï¿½ï¿½ï¿½ï¿½
+       Ô­Êµï¿½Ö·ï¿½ï¿½ï¿½Ö±ï¿½Ó±ï¿½ï¿½É¹ï¿½ï¿½ï¿½Ä£ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½æ¾¯ï¿½ï¿½Ä¬ï¿½ï¿½Ê§ */
     {
         uint8_t  ch;
         uint8_t  ok_buf[48] = {0};
@@ -412,11 +418,11 @@ uint8_t ESP8266_SendUDP(uint8_t *data, uint16_t len)
 }
 
 /**
-  * @brief  ´Ó ESP8266 ½ÓÊÕÍøÂçÊý¾Ý£¨½âÎö +IPD Ö¡£©
-  * @param  buf:    ½ÓÊÕÊý¾Ý»º³åÇø
-  * @param  len:    »º³åÇø×î´ó³¤¶È
-  * @param  timeout_ms: µÈ´ý³¬Ê±Ê±¼ä£¨ºÁÃë£©
-  * @retval Êµ¼Ê½ÓÊÕµ½µÄ×Ö½ÚÊý£¬0 ±íÊ¾³¬Ê±»òÎ´ÊÕµ½Êý¾Ý
+  * @brief  ï¿½ï¿½ ESP8266 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý£ï¿½ï¿½ï¿½ï¿½ï¿½ +IPD Ö¡ï¿½ï¿½
+  * @param  buf:    ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý»ï¿½ï¿½ï¿½ï¿½ï¿½
+  * @param  len:    ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ó³¤¶ï¿½
+  * @param  timeout_ms: ï¿½È´ï¿½ï¿½ï¿½Ê±Ê±ï¿½ä£¨ï¿½ï¿½ï¿½ë£©
+  * @retval Êµï¿½Ê½ï¿½ï¿½Õµï¿½ï¿½ï¿½ï¿½Ö½ï¿½ï¿½ï¿½ï¿½ï¿½0 ï¿½ï¿½Ê¾ï¿½ï¿½Ê±ï¿½ï¿½Î´ï¿½Õµï¿½ï¿½ï¿½ï¿½ï¿½
   */
 int16_t ESP8266_Receive(uint8_t *buf, uint16_t len, uint16_t timeout_ms)
 {
@@ -432,10 +438,10 @@ int16_t ESP8266_Receive(uint8_t *buf, uint16_t len, uint16_t timeout_ms)
         {
             switch (state)
             {
-                case 0:   /* µÈ´ý '+' */
+                case 0:   /* ï¿½È´ï¿½ '+' */
                     if (ch == '+') state = 1;
                     break;
-                case 1:   /* '+' ºó½Ó 'I' */
+                case 1:   /* '+' ï¿½ï¿½ï¿½ 'I' */
                     if (ch == 'I') state = 2;
                     else if (ch == '+') state = 1;
                     else state = 0;
@@ -448,7 +454,7 @@ int16_t ESP8266_Receive(uint8_t *buf, uint16_t len, uint16_t timeout_ms)
                     if (ch == 'D') state = 4;
                     else state = 0;
                     break;
-                case 4:   /* 'IPD,' ºó¶ÁÈ¡³¤¶È */
+                case 4:   /* 'IPD,' ï¿½ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½ */
                     if (ch == ':')
                     {
                         pkt_len = first_num;
@@ -463,7 +469,7 @@ int16_t ESP8266_Receive(uint8_t *buf, uint16_t len, uint16_t timeout_ms)
                         state = 0;
                     }
                     break;
-                case 5:   /* ¶ÁÈ¡Êµ¼ÊÊý¾Ý */
+                case 5:   /* ï¿½ï¿½È¡Êµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
                     if (rx_idx < len)
                     {
                         buf[rx_idx++] = ch;
@@ -488,8 +494,8 @@ int16_t ESP8266_Receive(uint8_t *buf, uint16_t len, uint16_t timeout_ms)
 }
 
 /**
-  * @brief  Ê¹ÓÃ AT+PING ¼ì²â ESP8266 ÊÇ·ñÒÑÁ¬Í¨ÍâÍø
-  * @retval 1=ÄÜ ping Í¨¹«ÍøµØÖ·£¬0=²»ÄÜ
+  * @brief  Ê¹ï¿½ï¿½ AT+PING ï¿½ï¿½ï¿½ ESP8266 ï¿½Ç·ï¿½ï¿½ï¿½ï¿½ï¿½Í¨ï¿½ï¿½ï¿½ï¿½
+  * @retval 1=ï¿½ï¿½ ping Í¨ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö·ï¿½ï¿½0=ï¿½ï¿½ï¿½ï¿½
   */
 uint8_t ESP8266_CheckInternet(void)
 {
@@ -503,7 +509,7 @@ uint8_t ESP8266_CheckInternet(void)
 }
 
 /**
-  * @brief  TCP Á¬½Ó£¨µ¥Á¬½ÓÄ£Ê½£©
+  * @brief  TCP ï¿½ï¿½ï¿½Ó£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä£Ê½ï¿½ï¿½
   */
 uint8_t ESP8266_ConnectTCP(char *ip, uint16_t port)
 {
@@ -519,9 +525,9 @@ uint8_t ESP8266_ConnectTCP(char *ip, uint16_t port)
     return ok;
 }
 
-/* TCP Ê§°ÜÍ³Ò»µÇ¼Ç£ºÇå»á»°±êÖ¾£¨²»Ðí¼Ù×°ÔÚÏß£©+ ÀÛ¼ÆÊ§°Ü¼ÆÊý£¨¹©½¡¿µ¼ì²é£©¡£
-   ´ËÇ° SendTCP ¸÷Ê§°ÜÂ·¾¶¾²Ä¬ return 0£¬s_mqtt_ok ºã 1¡¢s_send_fail_count
-   Ö»ÔÚ MQTT Ä£Ê½ÓÀ²»±»µ÷ÓÃµÄ SendUDP ÀïµÝÔö£¬µ¼ÖÂ TCP °ëËÀÓÀÔ¶ÎÞ»Ö¸´¡£ */
+/* TCP Ê§ï¿½ï¿½Í³Ò»ï¿½Ç¼Ç£ï¿½ï¿½ï¿½á»°ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½×°ï¿½ï¿½ï¿½ß£ï¿½+ ï¿½Û¼ï¿½Ê§ï¿½Ü¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½é£©ï¿½ï¿½
+   ï¿½ï¿½Ç° SendTCP ï¿½ï¿½Ê§ï¿½ï¿½Â·ï¿½ï¿½ï¿½ï¿½Ä¬ return 0ï¿½ï¿½s_mqtt_ok ï¿½ï¿½ 1ï¿½ï¿½s_send_fail_count
+   Ö»ï¿½ï¿½ MQTT Ä£Ê½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ãµï¿½ SendUDP ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ TCP ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô¶ï¿½Þ»Ö¸ï¿½ï¿½ï¿½ */
 static void TCP_NoteFail(void)
 {
     s_mqtt_ok = 0;
@@ -529,7 +535,7 @@ static void TCP_NoteFail(void)
 }
 
 /**
-  * @brief  ·¢ËÍ TCP Êý¾Ý£¨´ø link ×Ô¶¯ÖØÁ¬£©
+  * @brief  ï¿½ï¿½ï¿½ï¿½ TCP ï¿½ï¿½ï¿½Ý£ï¿½ï¿½ï¿½ link ï¿½Ô¶ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
   */
 uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
 {
@@ -539,18 +545,18 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
     uint8_t need_reconnect = 0;
 
     snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%d\r\n", len);
-    /* ·¢ËÍÇ°Çå¿Õ»·ÐÎ»º³å¡£²»ÄÜÖ±½Ó¶ª£ºÒ£²âÃ¿ 10s ·¢Ò»´Î£¬ÈôÏÂÐÐÃüÁîÕýºÃ
-       ÂäÔÚÕâ¸ö´°¿ÚÀï¾Í»á±»ÍÌµô£¬Á¬ÈÕÖ¾¶¼²»Áô¡£¸ÄÎªÎ¹¸ø +IPD ·ÖÖ¡Æ÷£¬
-       FeedByte Ö»ÔÝ´æÃüÁî¡¢²»»Øµ÷£¬Òò´Ë²»»áÓë±¾´Î·¢ËÍÐÎ³ÉÖØÈë¡£ */
+    /* ï¿½ï¿½ï¿½ï¿½Ç°ï¿½ï¿½Õ»ï¿½ï¿½Î»ï¿½ï¿½å¡£ï¿½ï¿½ï¿½ï¿½Ö±ï¿½Ó¶ï¿½ï¿½ï¿½Ò£ï¿½ï¿½Ã¿ 10s ï¿½ï¿½Ò»ï¿½Î£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+       ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í»á±»ï¿½Ìµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ÎªÎ¹ï¿½ï¿½ +IPD ï¿½ï¿½Ö¡ï¿½ï¿½ï¿½ï¿½
+       FeedByte Ö»ï¿½Ý´ï¿½ï¿½ï¿½ï¿½î¡¢ï¿½ï¿½ï¿½Øµï¿½ï¿½ï¿½ï¿½ï¿½Ë²ï¿½ï¿½ï¿½ï¿½ë±¾ï¿½Î·ï¿½ï¿½ï¿½ï¿½Î³ï¿½ï¿½ï¿½ï¿½ë¡£ */
     while (USART3_GetByte(&ch)) MQTT_FeedByte(ch);
 
     if (!ESP8266_SendAT(cmd, ">", 3000))
     {
-        /* µÈ²»µ½ ">" ¼´ÅÐ¶¨Á´Â·Òì³££¬ÎÞÌõ¼þ³¢ÊÔÒ»´Î TCP ÖØÁ¬+ÖØ·¢¡£
-           Ô­ÊµÏÖ¿¿ err_buf Æ¥Åä "link is not valid"/"ERROR" ¾ö¶¨ÊÇ·ñÖØÁ¬£¬
-           µ« SendAT ÔÚµÈ ">" µÄ 3s ´°¿ÚÄÚÒÑ°ÑÄ£¿éÏìÓ¦ÍÌ½ø×Ô¼ºµÄ rx_buf
-           £¨³¬Ê±·µ»ØÊ±ËæÕ»Ö¡¶ªÆú£©£¬ÕâÀïÔÙ¶Á»·ÐÎ»º³å³£¼ûÊ±ÐòÏÂºãÎª¿Õ£¬
-           °´ÄÚÈÝÆ¥ÅäµÄ¶ÏÁ´¼ì²âÊµ¼Ê²»¿É´ï£¬½üºõËÀ´úÂë¡£ */
+        /* ï¿½È²ï¿½ï¿½ï¿½ ">" ï¿½ï¿½ï¿½Ð¶ï¿½ï¿½ï¿½Â·ï¿½ì³£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ TCP ï¿½ï¿½ï¿½ï¿½+ï¿½Ø·ï¿½ï¿½ï¿½
+           Ô­Êµï¿½Ö¿ï¿½ err_buf Æ¥ï¿½ï¿½ "link is not valid"/"ERROR" ï¿½ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+           ï¿½ï¿½ SendAT ï¿½Úµï¿½ ">" ï¿½ï¿½ 3s ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ñ°ï¿½Ä£ï¿½ï¿½ï¿½ï¿½Ó¦ï¿½Ì½ï¿½ï¿½Ô¼ï¿½ï¿½ï¿½ rx_buf
+           ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½Õ»Ö¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ù¶ï¿½ï¿½ï¿½ï¿½Î»ï¿½ï¿½å³£ï¿½ï¿½Ê±ï¿½ï¿½ï¿½Âºï¿½Îªï¿½Õ£ï¿½
+           ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Æ¥ï¿½ï¿½Ä¶ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Êµï¿½Ê²ï¿½ï¿½É´ï£¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ë¡£ */
         uint8_t  err_buf[64] = {0};
         uint16_t err_idx = 0;
         while (USART3_GetByte(&ch) && err_idx < sizeof(err_buf) - 1)
@@ -563,22 +569,22 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
 
     if (need_reconnect)
     {
-        s_mqtt_ok = 0;   /* TCP ÖØ½¨ÁË£¬MQTT »á»°¶ªÁË£¬±ØÐëÖØÎÕÊÖ */
+        s_mqtt_ok = 0;   /* TCP ï¿½Ø½ï¿½ï¿½Ë£ï¿½MQTT ï¿½á»°ï¿½ï¿½ï¿½Ë£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
         if (!ESP8266_ConnectTCP(MQTT_SERVER, MQTT_PORT))
         {
             U1_PRINTF("[ESP8266] TCP reconnect FAIL\r\n");
             TCP_NoteFail();
             return 0;
         }
-        /* ÐÂ socket ÉÏÃ»ÓÐ MQTT CONNECT »á»°£ºÂãÖØ·¢ PUBLISH ±¨ÎÄ»á±»
-           broker µ±Ð­ÒéÎ¥¹æÖ±½Ó¶ªÆú£¬º¯ÊýÈ´·µ»Ø"³É¹¦"¡ª¡ª¸æ¾¯¾²Ä¬¶ªÊ§¡£
-           ²»×°£ºÈçÊµ·µ»ØÊ§°Ü£»s_mqtt_ok ÒÑÇå£¬ÏÂÒ»´Î·¢²¼»á×ß
-           EnsureSession Íê³É CONNECT+SUBSCRIBE ÖØÎÕÊÖºóÔÙ·¢£¨P3-#8£© */
+        /* ï¿½ï¿½ socket ï¿½ï¿½Ã»ï¿½ï¿½ MQTT CONNECT ï¿½á»°ï¿½ï¿½ï¿½ï¿½ï¿½Ø·ï¿½ PUBLISH ï¿½ï¿½ï¿½Ä»á±»
+           broker ï¿½ï¿½Ð­ï¿½ï¿½Î¥ï¿½ï¿½Ö±ï¿½Ó¶ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È´ï¿½ï¿½ï¿½ï¿½"ï¿½É¹ï¿½"ï¿½ï¿½ï¿½ï¿½ï¿½æ¾¯ï¿½ï¿½Ä¬ï¿½ï¿½Ê§ï¿½ï¿½
+           ï¿½ï¿½×°ï¿½ï¿½ï¿½ï¿½Êµï¿½ï¿½ï¿½ï¿½Ê§ï¿½Ü£ï¿½s_mqtt_ok ï¿½ï¿½ï¿½å£¬ï¿½ï¿½Ò»ï¿½Î·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+           EnsureSession ï¿½ï¿½ï¿½ CONNECT+SUBSCRIBE ï¿½ï¿½ï¿½ï¿½ï¿½Öºï¿½ï¿½Ù·ï¿½ï¿½ï¿½P3-#8ï¿½ï¿½ */
         U1_PRINTF("[ESP8266] TCP reconnected, MQTT session lost, msg dropped honestly\r\n");
         return 0;
     }
 
-    delay_ms(100);   /* µÈ > ÌáÊ¾ÎÈ¶¨ */
+    delay_ms(100);   /* ï¿½ï¿½ > ï¿½ï¿½Ê¾ï¿½È¶ï¿½ */
 
     for (i = 0; i < len; i++) USART3_SendByte(data[i]);
     U1_PRINTF("[ESP8266] sent %d bytes\r\n", len);
@@ -590,11 +596,11 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
         uint16_t ok_timeout = 2000;
         while (ok_timeout--) {
             while (USART3_GetByte(&ch)) {
-                /* Õâ¸öµÈ´ý´°¿ÚÓÐ 50~200ms£¬ÆÚ¼äµ½´ïµÄÏÂÐÐ +IPD Ö¡ÈôÖ»½ø ok_buf
-                   ¾Í»áËæ return Ò»Æð¶ªµô¡£×Ö½ÚÒ»µ½¾ÍÎ¹½âÎöÆ÷£¬¸²¸ÇÈýÖÖÇé¿ö£º
-                   SEND OK Ö®Ç°µ½´ïµÄÖ¡¡¢³¬³ö ok_buf 63 ×Ö½ÚÉÏÏÞ±»½Ø¶ÏµÄÖ¡¡¢
-                   ÒÔ¼°³¬Ê± return 0 Â·¾¶ÉÏµÄÖ¡¡£²»¿ÉÔÚ return Ç°ÔÙ»Ø¹à ok_buf£¬
-                   ·ñÔòÍ¬Ò»Åú×Ö½Ú»á±»Î¹Á½´Î£¬ÆÆ»µ +IPD ×´Ì¬»úµÄÍ¬²½¡£ */
+                /* ï¿½ï¿½ï¿½ï¿½È´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ 50~200msï¿½ï¿½ï¿½Ú¼äµ½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ +IPD Ö¡ï¿½ï¿½Ö»ï¿½ï¿½ ok_buf
+                   ï¿½Í»ï¿½ï¿½ï¿½ return Ò»ï¿½ð¶ªµï¿½ï¿½ï¿½ï¿½Ö½ï¿½Ò»ï¿½ï¿½ï¿½ï¿½Î¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+                   SEND OK Ö®Ç°ï¿½ï¿½ï¿½ï¿½ï¿½Ö¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ok_buf 63 ï¿½Ö½ï¿½ï¿½ï¿½ï¿½Þ±ï¿½ï¿½Ø¶Ïµï¿½Ö¡ï¿½ï¿½
+                   ï¿½Ô¼ï¿½ï¿½ï¿½Ê± return 0 Â·ï¿½ï¿½ï¿½Ïµï¿½Ö¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ return Ç°ï¿½Ù»Ø¹ï¿½ ok_bufï¿½ï¿½
+                   ï¿½ï¿½ï¿½ï¿½Í¬Ò»ï¿½ï¿½ï¿½Ö½Ú»á±»Î¹ï¿½ï¿½ï¿½Î£ï¿½ï¿½Æ»ï¿½ +IPD ×´Ì¬ï¿½ï¿½ï¿½ï¿½Í¬ï¿½ï¿½ï¿½ï¿½ */
                 MQTT_FeedByte(ch);
                 if (ok_idx < sizeof(ok_buf) - 1) {
                     ok_buf[ok_idx++] = ch;
@@ -602,7 +608,7 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
                 }
             }
             if (strstr((char *)ok_buf, "SEND OK")) {
-                s_send_fail_count = 0;   /* ·¢ËÍ³É¹¦£¬ÇåÁ¬ÐøÊ§°Ü¼ÆÊý */
+                s_send_fail_count = 0;   /* ï¿½ï¿½ï¿½Í³É¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê§ï¿½Ü¼ï¿½ï¿½ï¿½ */
                 return 1;
             }
             if (strstr((char *)ok_buf, "ERROR") ||
@@ -622,11 +628,11 @@ uint8_t ESP8266_SendTCP(uint8_t *data, uint16_t len)
 }
 
 /* =====================================================================
- * MQTT 3.1.1 ¾«¼òÊµÏÖ£¨Ìæ´úÔ­°Í·¨ÔÆ TCP Ð­Òé£©
- * µ×²ã TCP ÊÕ·¢Ö±½Ó¸´ÓÃ ESP8266_ConnectTCP / ESP8266_SendTCP
+ * MQTT 3.1.1 ï¿½ï¿½ï¿½ï¿½Êµï¿½Ö£ï¿½ï¿½ï¿½ï¿½Ô­ï¿½Í·ï¿½ï¿½ï¿½ TCP Ð­ï¿½é£©
+ * ï¿½×²ï¿½ TCP ï¿½Õ·ï¿½Ö±ï¿½Ó¸ï¿½ï¿½ï¿½ ESP8266_ConnectTCP / ESP8266_SendTCP
  * ===================================================================== */
 
-/* Ð´ MQTT UTF-8 ×Ö·û´®£¨2 ×Ö½Ú´ó¶Ë³¤¶ÈÇ°×º + payload£© */
+/* Ð´ MQTT UTF-8 ï¿½Ö·ï¿½ï¿½ï¿½ï¿½ï¿½2 ï¿½Ö½Ú´ï¿½Ë³ï¿½ï¿½ï¿½Ç°×º + payloadï¿½ï¿½ */
 static uint16_t MQTT_WriteStr(uint8_t *dst, const char *s)
 {
     uint16_t len = (uint16_t)strlen(s);
@@ -637,7 +643,7 @@ static uint16_t MQTT_WriteStr(uint8_t *dst, const char *s)
 }
 
 /**
-  * @brief  Á¬½Ó MQTT Broker£ºTCP Á¬½Ó + MQTT CONNECT
+  * @brief  ï¿½ï¿½ï¿½ï¿½ MQTT Brokerï¿½ï¿½TCP ï¿½ï¿½ï¿½ï¿½ + MQTT CONNECT
   * @retval 1=OK, 0=FAIL
   */
 uint8_t ESP8266_MQTTConnect(void)
@@ -655,21 +661,21 @@ uint8_t ESP8266_MQTTConnect(void)
         return 0;
     }
 
-    /* --- ¹¹Ôì MQTT CONNECT ±¨ÎÄ ---
-       ¹Ì¶¨Í·: 0x10 | Ê£Óà³¤¶È (µ¥×Ö½Ú£¬<=127)
-       ¿É±äÍ·: Ð­ÒéÃû "MQTT"(6) + ¼¶±ð 0x04 + ±êÖ¾ 0x02(Clean) + KeepAlive(2)
+    /* --- ï¿½ï¿½ï¿½ï¿½ MQTT CONNECT ï¿½ï¿½ï¿½ï¿½ ---
+       ï¿½Ì¶ï¿½Í·: 0x10 | Ê£ï¿½à³¤ï¿½ï¿½ (ï¿½ï¿½ï¿½Ö½Ú£ï¿½<=127)
+       ï¿½É±ï¿½Í·: Ð­ï¿½ï¿½ï¿½ï¿½ "MQTT"(6) + ï¿½ï¿½ï¿½ï¿½ 0x04 + ï¿½ï¿½Ö¾ 0x02(Clean) + KeepAlive(2)
        Payload: ClientID
     */
-    pos = 2;  /* Ô¤Áô¹Ì¶¨Í· 2 ×Ö½Ú */
-    pos += MQTT_WriteStr(pkt + pos, "MQTT");    /* Ð­ÒéÃû */
-    pkt[pos++] = 0x04;                           /* Ð­Òé¼¶±ð 4 = 3.1.1 */
+    pos = 2;  /* Ô¤ï¿½ï¿½ï¿½Ì¶ï¿½Í· 2 ï¿½Ö½ï¿½ */
+    pos += MQTT_WriteStr(pkt + pos, "MQTT");    /* Ð­ï¿½ï¿½ï¿½ï¿½ */
+    pkt[pos++] = 0x04;                           /* Ð­ï¿½é¼¶ï¿½ï¿½ 4 = 3.1.1 */
     pkt[pos++] = 0x02;                           /* Connect Flags: CleanSession=1 */
     pkt[pos++] = (MQTT_KEEPALIVE_SEC >> 8) & 0xFF;
     pkt[pos++] =  MQTT_KEEPALIVE_SEC       & 0xFF;
     pos += MQTT_WriteStr(pkt + pos, MQTT_CLIENT_ID);
 
     pkt[0] = 0x10;                               /* CONNECT */
-    pkt[1] = (uint8_t)(pos - 2);                 /* Ê£Óà³¤¶È */
+    pkt[1] = (uint8_t)(pos - 2);                 /* Ê£ï¿½à³¤ï¿½ï¿½ */
 
     U1_PRINTF("[MQTT] Sending CONNECT (%d bytes)\r\n", pos);
     if (!ESP8266_SendTCP(pkt, pos)) {
@@ -677,10 +683,10 @@ uint8_t ESP8266_MQTTConnect(void)
         return 0;
     }
 
-    /* µÈ CONNACK£º¹Ì¶¨Í· 0x20 0x02 XX 0x00(·µ»ØÂë=0)
-       ESP8266 µÄÏÂÐÐÊý¾ÝÍ¨³£´ø +IPD,N: Ç°×º£¬ÇÒ CIPSEND µÄ SEND OK
-       ¶Á»º³å¿ÉÄÜ°ÑÇ°×ºÍÌ³É²ÐÈ±µÄ PD,/D,/¡¢: µÈ£¬Òò´Ë²»ÄÜ¼ÙÉè CONNACK
-       ´Ó×Ö½Ú 0 ¿ªÊ¼£¬±ØÐë¶ÔÕû¶Î»º³åÉ¨Ãè 0x20 0x02 XX 0x00 Ç©Ãû¡£ */
+    /* ï¿½ï¿½ CONNACKï¿½ï¿½ï¿½Ì¶ï¿½Í· 0x20 0x02 XX 0x00(ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½=0)
+       ESP8266 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í¨ï¿½ï¿½ï¿½ï¿½ +IPD,N: Ç°×ºï¿½ï¿½ï¿½ï¿½ CIPSEND ï¿½ï¿½ SEND OK
+       ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ü°ï¿½Ç°×ºï¿½Ì³É²ï¿½È±ï¿½ï¿½ PD,/D,/ï¿½ï¿½: ï¿½È£ï¿½ï¿½ï¿½Ë²ï¿½ï¿½Ü¼ï¿½ï¿½ï¿½ CONNACK
+       ï¿½ï¿½ï¿½Ö½ï¿½ 0 ï¿½ï¿½Ê¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î»ï¿½ï¿½ï¿½É¨ï¿½ï¿½ 0x20 0x02 XX 0x00 Ç©ï¿½ï¿½ï¿½ï¿½ */
     {
         uint8_t  rx[64] = {0};
         uint16_t rx_idx = 0;
@@ -707,7 +713,7 @@ uint8_t ESP8266_MQTTConnect(void)
 }
 
 /**
-  * @brief  ¶©ÔÄ¿ØÖÆÖ¸ÁîÖ÷Ìâ MQTT_TOPIC_CMD
+  * @brief  ï¿½ï¿½ï¿½Ä¿ï¿½ï¿½ï¿½Ö¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ MQTT_TOPIC_CMD
   * @retval 1=OK, 0=FAIL
   */
 uint8_t ESP8266_MQTTSubscribe(void)
@@ -716,7 +722,7 @@ uint8_t ESP8266_MQTTSubscribe(void)
     uint16_t pos;
     uint16_t pkt_id = 1;
 
-    pos = 2;   /* ¹Ì¶¨Í· 2 ×Ö½Ú */
+    pos = 2;   /* ï¿½Ì¶ï¿½Í· 2 ï¿½Ö½ï¿½ */
     pkt[pos++] = (pkt_id >> 8) & 0xFF;
     pkt[pos++] =  pkt_id       & 0xFF;
     pos += MQTT_WriteStr(pkt + pos, MQTT_TOPIC_CMD);
@@ -731,9 +737,9 @@ uint8_t ESP8266_MQTTSubscribe(void)
         return 0;
     }
 
-    /* µÈ SUBACK: 0x90 <Ê£Óà³¤¶È> <pkt_id¸ß> <pkt_idµÍ> <0x00>
-       Óë CONNACK Í¬Àí£ºSUBACK Ò²´ø +IPD,N: Ç°×ºÇÒ¿ÉÄÜ±» SEND OK
-       »º³åÇÐËé£¬¹Ê¶ÔÕû¸ö»º³åÉ¨Ãè 0x90 ... 0x00 Ç©Ãû¡£ */
+    /* ï¿½ï¿½ SUBACK: 0x90 <Ê£ï¿½à³¤ï¿½ï¿½> <pkt_idï¿½ï¿½> <pkt_idï¿½ï¿½> <0x00>
+       ï¿½ï¿½ CONNACK Í¬ï¿½ï¿½ï¿½ï¿½SUBACK Ò²ï¿½ï¿½ +IPD,N: Ç°×ºï¿½Ò¿ï¿½ï¿½Ü±ï¿½ SEND OK
+       ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½é£¬ï¿½Ê¶ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É¨ï¿½ï¿½ 0x90 ... 0x00 Ç©ï¿½ï¿½ï¿½ï¿½ */
     {
         uint8_t  rx[32] = {0};
         uint16_t rx_idx = 0;
@@ -760,47 +766,87 @@ uint8_t ESP8266_MQTTSubscribe(void)
 }
 
 /**
-  * @brief  È·±£ MQTT »á»°ÓÐÐ§£¨TCP + CONNECT + SUBSCRIBE ¶¼ OK£©
-  * @retval 1=»á»°¾ÍÐ÷£¬0=ÖØÁ¬Ê§°Ü
+  * @brief  È·ï¿½ï¿½ MQTT ï¿½á»°ï¿½ï¿½Ð§ï¿½ï¿½TCP + CONNECT + SUBSCRIBE ï¿½ï¿½ OKï¿½ï¿½
+  * @retval 1=ï¿½á»°ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½0=ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½
   */
 static uint8_t MQTT_EnsureSession(void)
 {
-    /* ÖØÁ¬ÍË±Ü£ºbroker ²»¿ÉÓÃÊ±Ò£²â(10s)/ÐÄÌø(30s)Ã¿´Î publish ¶¼»á×ßµ½ÕâÀï¡£
-       ÎÞÍË±ÜÊ±Ã¿¸öÖÜÆÚ¶¼×öÒ»´ÎÍêÕûÎÕÊÖ£¨CIPSTART 10s ³¬Ê±Ö÷µ¼£¬×î»µ ~15s£©£¬
-       Ð­×÷Ê½µ÷¶ÈÆ÷±»·´¸´³¤×èÈû£¬¾ö²ß/ÏÔÊ¾/²ÉÑùÈ«²¿°¤¶ö¡£
-       ÏÞÖÆÍêÕûÖØÁ¬×î¶àÃ¿ 60s Ò»´Î£¬ÆÚ¼ä¿ìËÙÊ§°Ü£»Ê×´Îµ÷ÓÃ±Ø·ÅÐÐ¡£ */
-    #define MQTT_RECONNECT_BACKOFF_MS  60000U
+    /* ï¿½ï¿½ï¿½ï¿½ï¿½Ë±Ü£ï¿½broker ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±Ò£ï¿½ï¿½(10s)/ï¿½ï¿½ï¿½ï¿½(30s)Ã¿ï¿½ï¿½ publish ï¿½ï¿½ï¿½ï¿½ï¿½ßµï¿½ï¿½ï¿½ï¿½ï¡£
+       ï¿½ï¿½ï¿½Ë±ï¿½Ê±Ã¿ï¿½ï¿½ï¿½ï¿½ï¿½Ú¶ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö£ï¿½CIPSTART 10s ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½î»µ ~15sï¿½ï¿½ï¿½ï¿½
+       Ð­ï¿½ï¿½Ê½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½/ï¿½ï¿½Ê¾/ï¿½ï¿½ï¿½ï¿½È«ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+       ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ã¿ 60s Ò»ï¿½Î£ï¿½ï¿½Ú¼ï¿½ï¿½ï¿½ï¿½Ê§ï¿½Ü£ï¿½ï¿½×´Îµï¿½ï¿½Ã±Ø·ï¿½ï¿½Ð¡ï¿½ */
+    /* Escalating backoff: 5s after 1st failure, 15s after 2nd, 60s cap.
+       A brief broker/router blip heals in 5s; a long outage stays gentle. */
+    static const uint32_t backoff_ms[3] = { 5000U, 15000U, 60000U };
     static uint32_t s_last_attempt = 0;
+    uint32_t cur_backoff;
 
-    if (s_mqtt_ok) return 1;   /* »á»°»¹»î×Å£¬Ö±½ÓÓÃ */
+    if (s_mqtt_ok) return 1;   /* ï¿½á»°ï¿½ï¿½ï¿½ï¿½ï¿½Å£ï¿½Ö±ï¿½ï¿½ï¿½ï¿½ */
 
+    cur_backoff = backoff_ms[(s_reconnect_streak >= 2) ? 2 : s_reconnect_streak];
     if (s_last_attempt != 0 &&
-        (g_tick - s_last_attempt) < MQTT_RECONNECT_BACKOFF_MS)
+        (g_tick - s_last_attempt) < cur_backoff)
         return 0;
     s_last_attempt = g_tick;
 
-    U1_PRINTF("[MQTT] session lost, full reconnect...\r\n");
-    if (!ESP8266_MQTTConnect())
+    U1_PRINTF("[MQTT] session lost, reconnect (streak=%u backoff=%lums)...\r\n",
+              (unsigned)s_reconnect_streak, (unsigned long)cur_backoff);
+    if (ESP8266_MQTTConnect() && ESP8266_MQTTSubscribe())
     {
-        U1_PRINTF("[MQTT] CONNECT FAIL\r\n");
-        return 0;
+        s_reconnect_streak = 0;
+        goto session_restored;
     }
-    if (!ESP8266_MQTTSubscribe())
+    s_reconnect_streak++;
+
+    /* Recovery ladder after 2 consecutive TCP-level failures:
+       the AP itself is usually gone (hotspot/router rebooted), so re-associate
+       WiFi before rebuilding the session. If re-association also fails, the
+       module may be wedged -> AT+RST + full re-init (baud/WiFi/MQTT).
+       All of this blocks TaskComm only; sensing/alarm/keys/display keep running. */
+    if (s_reconnect_streak >= 2)
     {
-        U1_PRINTF("[MQTT] SUBSCRIBE FAIL\r\n");
-        return 0;
+        U1_PRINTF("[NET] 2 strikes, re-associating WiFi...\r\n");
+        s_wifi_ok = 0;
+        s_mqtt_ok = 0;
+        if (ESP8266_ConnectAP(WIFI_SSID, WIFI_PASSWORD))
+        {
+            U1_PRINTF("[NET] WiFi back, rebuilding MQTT session...\r\n");
+            if (ESP8266_MQTTConnect() && ESP8266_MQTTSubscribe())
+            {
+                s_reconnect_streak = 0;
+                goto session_restored;
+            }
+            s_reconnect_streak++;
+        }
+        else
+        {
+            U1_PRINTF("[NET] WiFi re-assoc FAIL, AT+RST + re-init...\r\n");
+            s_last_attempt = g_tick;   /* long init below; defer next attempt */
+            ESP8266_Reset();
+            if (ESP8266_Init())
+            {
+                s_reconnect_streak = 0;
+                return s_mqtt_ok;   /* Init rebuilds the MQTT session if broker is up */
+            }
+            U1_PRINTF("[NET] module re-init FAIL, will retry later\r\n");
+        }
     }
+
+    U1_PRINTF("[MQTT] CONNECT FAIL\r\n");
+    return 0;
+
+session_restored:
     s_mqtt_ok = 1;
-    s_send_fail_count = 0;   /* »á»°»Ö¸´£¬ÇåÁ¬ÐøÊ§°Ü¼ÆÊý */
+    s_send_fail_count = 0;   /* ï¿½á»°ï¿½Ö¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê§ï¿½Ü¼ï¿½ï¿½ï¿½ */
     U1_PRINTF("[MQTT] session restored OK\r\n");
-    MQTT_ReportLightStatus();    /* »á»°¾ÍÐ÷ºóÁ¢¿ÌÖ÷¶¯ÉÏ±¨µÆ×´Ì¬£¨broker retain£© */
-    MQTT_ReportModeStatus();       /* »á»°¾ÍÐ÷ºóÁ¢¿ÌÖ÷¶¯ÉÏ±¨Ä£Ê½×´Ì¬£¨broker retain£© */
+    MQTT_ReportLightStatus();    /* ï¿½á»°ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï±ï¿½ï¿½ï¿½×´Ì¬ï¿½ï¿½broker retainï¿½ï¿½ */
+    MQTT_ReportModeStatus();       /* ï¿½á»°ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï±ï¿½Ä£Ê½×´Ì¬ï¿½ï¿½broker retainï¿½ï¿½ */
     return 1;
 }
 
 /**
-  * @brief  ÏòÖ¸¶¨Ö÷Ìâ·¢²¼ÏûÏ¢£¨QoS 0£¬²»µÈ´ý PUBACK£©
-  * @param  retain: 1=broker ±£Áô×îºóÒ»ÌõÏûÏ¢£¬ÐÂ¿Í»§¶Ë¶©ÔÄÊ±Á¢¿ÌËÍ´ï£»0=²»±£Áô
+  * @brief  ï¿½ï¿½Ö¸ï¿½ï¿½ï¿½ï¿½ï¿½â·¢ï¿½ï¿½ï¿½ï¿½Ï¢ï¿½ï¿½QoS 0ï¿½ï¿½ï¿½ï¿½ï¿½È´ï¿½ PUBACKï¿½ï¿½
+  * @param  retain: 1=broker ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ï¿½ï¿½Ï¢ï¿½ï¿½ï¿½Â¿Í»ï¿½ï¿½Ë¶ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½ï¿½Í´ï£»0=ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
   */
 uint8_t ESP8266_MQTTPublish(const char *topic, const char *payload, uint8_t retain)
 {
@@ -810,7 +856,7 @@ uint8_t ESP8266_MQTTPublish(const char *topic, const char *payload, uint8_t reta
 
     if (!topic || !payload) return 0;
 
-    /* È·±£ MQTT »á»°ÓÐÐ§£¨TCP link ´æÔÚ + CONNECT + SUBSCRIBE ÒÑÍê³É£© */
+    /* È·ï¿½ï¿½ MQTT ï¿½á»°ï¿½ï¿½Ð§ï¿½ï¿½TCP link ï¿½ï¿½ï¿½ï¿½ + CONNECT + SUBSCRIBE ï¿½ï¿½ï¿½ï¿½É£ï¿½ */
     if (!MQTT_EnsureSession())
     {
         return 0;
@@ -823,7 +869,7 @@ uint8_t ESP8266_MQTTPublish(const char *topic, const char *payload, uint8_t reta
         return 0;
     }
 
-    pos = 2;   /* ¹Ì¶¨Í· 2 ×Ö½Ú */
+    pos = 2;   /* ï¿½Ì¶ï¿½Í· 2 ï¿½Ö½ï¿½ */
     pos += MQTT_WriteStr(pkt + pos, topic);
     memcpy(pkt + pos, payload, plen);
     pos += plen;
@@ -835,64 +881,64 @@ uint8_t ESP8266_MQTTPublish(const char *topic, const char *payload, uint8_t reta
 }
 
 /**
-  * @brief  MQTT PINGREQ ÐÄÌø£¨È·±£»á»°ÓÐÐ§ºóÔÙ·¢£©
+  * @brief  MQTT PINGREQ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È·ï¿½ï¿½ï¿½á»°ï¿½ï¿½Ð§ï¿½ï¿½ï¿½Ù·ï¿½ï¿½ï¿½
   */
 uint8_t ESP8266_MQTTPing(void)
 {
-    static uint8_t ping[] = {0xC0, 0x00};   /* PINGREQ + Ê£Óà³¤¶È 0 */
+    static uint8_t ping[] = {0xC0, 0x00};   /* PINGREQ + Ê£ï¿½à³¤ï¿½ï¿½ 0 */
 
     if (!MQTT_EnsureSession()) return 0;
     return ESP8266_SendTCP(ping, 2);
 }
 
 /**
-  * @brief  ´¦Àí USART3 »·ÐÎ»º³åÖÐµÄ MQTT ÏÂÐÐ°ü
-  *         µ÷ÓÃÊ±»ú£ºÖ÷Ñ­»·Ã¿ tick µ÷Ò»´Î£¨·Ç×èÈû£¬²»ÒýÈëÈÎºÎÑÓÊ±£©
+  * @brief  ï¿½ï¿½ï¿½ï¿½ USART3 ï¿½ï¿½ï¿½Î»ï¿½ï¿½ï¿½ï¿½Ðµï¿½ MQTT ï¿½ï¿½ï¿½Ð°ï¿½
+  *         ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ñ­ï¿½ï¿½Ã¿ tick ï¿½ï¿½Ò»ï¿½Î£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Îºï¿½ï¿½ï¿½Ê±ï¿½ï¿½
   *
-  * Á½¼¶×´Ì¬»ú£º
-  *   µÚÒ»¼¶ IPD_* ¡ª¡ª °þµô ESP8266 AT ¹Ì¼þµÄ "+IPD,<len>:" Ç°×º
-  *                   £¨¶àÁ¬½Ó¹Ì¼þÊÇ "+IPD,<link id>,<len>:"£¬Á½ÖÖ¶¼Ö§³Ö£©¡£
-  *                   Ö»ÓÐ½øÈëÔØºÉÌ¬Ö®ºó£¬×Ö½Ú²Å»á±»µ±³É MQTT ¹Ì¶¨Í·¡£
-  *   µÚ¶þ¼¶ MQTT_ParseFrame() ¡ª¡ª ÔÚÍêÕûÔØºÉÉÏ°´ MQTT 3.1.1 ½â°ü¡£
+  * ï¿½ï¿½ï¿½ï¿½×´Ì¬ï¿½ï¿½ï¿½ï¿½
+  *   ï¿½ï¿½Ò»ï¿½ï¿½ IPD_* ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ESP8266 AT ï¿½Ì¼ï¿½ï¿½ï¿½ "+IPD,<len>:" Ç°×º
+  *                   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ó¹Ì¼ï¿½ï¿½ï¿½ "+IPD,<link id>,<len>:"ï¿½ï¿½ï¿½ï¿½ï¿½Ö¶ï¿½Ö§ï¿½Ö£ï¿½ï¿½ï¿½
+  *                   Ö»ï¿½Ð½ï¿½ï¿½ï¿½ï¿½Øºï¿½Ì¬Ö®ï¿½ï¿½ï¿½Ö½Ú²Å»á±»ï¿½ï¿½ï¿½ï¿½ MQTT ï¿½Ì¶ï¿½Í·ï¿½ï¿½
+  *   ï¿½Ú¶ï¿½ï¿½ï¿½ MQTT_ParseFrame() ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Øºï¿½ï¿½Ï°ï¿½ MQTT 3.1.1 ï¿½ï¿½ï¿½ï¿½ï¿½
   *
-  * ÎªÊ²Ã´±ØÐë·ÖÁ½¼¶£ºASCII '0'-'9' ÊÇ 0x30-0x39£¬':' ÊÇ 0x3A¡¢'=' ÊÇ 0x3D£¬
-  * ËüÃÇ & 0xF0 È«¶¼µÈÓÚ 0x30¡£¾ÉÊµÏÖÖ±½ÓÔÚÂã UART Á÷ÉÏÅÐ (ch & 0xF0)==0x30£¬
-  * ÓÚÊÇ°Ñ "+IPD,2:" ÀïµÄ '2' µ±³É PUBLISH ¹Ì¶¨Í·¡¢':' µ±³ÉÊ£Óà³¤¶È 58£¬
-  * Õæ°ü±»µ±×÷°üÌåÍÌµô£¬topic/payload È«½âÎö³ÉÀ¬»ø¡£
+  * ÎªÊ²Ã´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ASCII '0'-'9' ï¿½ï¿½ 0x30-0x39ï¿½ï¿½':' ï¿½ï¿½ 0x3Aï¿½ï¿½'=' ï¿½ï¿½ 0x3Dï¿½ï¿½
+  * ï¿½ï¿½ï¿½ï¿½ & 0xF0 È«ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ 0x30ï¿½ï¿½ï¿½ï¿½Êµï¿½ï¿½Ö±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ UART ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ (ch & 0xF0)==0x30ï¿½ï¿½
+  * ï¿½ï¿½ï¿½Ç°ï¿½ "+IPD,2:" ï¿½ï¿½ï¿½ '2' ï¿½ï¿½ï¿½ï¿½ PUBLISH ï¿½Ì¶ï¿½Í·ï¿½ï¿½':' ï¿½ï¿½ï¿½ï¿½Ê£ï¿½à³¤ï¿½ï¿½ 58ï¿½ï¿½
+  * ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ìµï¿½ï¿½ï¿½topic/payload È«ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
   *
-  * ÖØÈëËµÃ÷£ºMQTT_FeedByte() Ö»½âÎö¡¢Ö»°ÑÃüÁîÔÝ´æµ½ s_pending_cmd£¬
-  * ¾ø²»ÔÚÕâÀï»Øµ÷¡£ÒòÎª ESP8266_SendTCP() ·¢ËÍÇ°Ò²»áµ÷ FeedByte Çå»º³å£¬
-  * ¶ø MQTT_OnCmdReceived() ÀïÓÖÒª MQTTPublish ÉÏ±¨×´Ì¬£¬ÈôÔÚ FeedByte ÄÚ
-  * Ö±½Ó»Øµ÷¾Í»áÐÎ³É SendTCP ¡ú »Øµ÷ ¡ú MQTTPublish ¡ú SendTCP µÄÖØÈë¡£
+  * ï¿½ï¿½ï¿½ï¿½Ëµï¿½ï¿½ï¿½ï¿½MQTT_FeedByte() Ö»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý´æµ½ s_pending_cmdï¿½ï¿½
+  * ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Øµï¿½ï¿½ï¿½ï¿½ï¿½Îª ESP8266_SendTCP() ï¿½ï¿½ï¿½ï¿½Ç°Ò²ï¿½ï¿½ï¿½ FeedByte ï¿½å»ºï¿½å£¬
+  * ï¿½ï¿½ MQTT_OnCmdReceived() ï¿½ï¿½ï¿½ï¿½Òª MQTTPublish ï¿½Ï±ï¿½×´Ì¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ FeedByte ï¿½ï¿½
+  * Ö±ï¿½Ó»Øµï¿½ï¿½Í»ï¿½ï¿½Î³ï¿½ SendTCP ï¿½ï¿½ ï¿½Øµï¿½ ï¿½ï¿½ MQTTPublish ï¿½ï¿½ SendTCP ï¿½ï¿½ï¿½ï¿½ï¿½ë¡£
   */
 
-/* MQTT ¹Ì¶¨Í·¸ß 4 Î» */
+/* MQTT ï¿½Ì¶ï¿½Í·ï¿½ï¿½ 4 Î» */
 #define MQTT_PKT_PUBLISH    0x30
 #define MQTT_PKT_PINGRESP   0xD0
 
-#define IPD_BUF_SIZE        128   /* µ¥Ö¡ +IPD ÔØºÉÉÏÏÞ£¬³¬³¤µÄÖ¡¶ªÆúµ«ÈÔ¼ÆÊý×Ö½ÚÒÔ±£³ÖÍ¬²½ */
-#define IPD_LEN_MAX         2048  /* +IPD ³¤¶È×Ö¶ÎµÄÒç³ö±£»¤ÉÏÏÞ */
-#define CMD_BUF_SIZE        32    /* ÔÝ´æÏÂÐÐÃüÁî payload£¨"on"/"off" Ö®Àà£© */
-#define TOPIC_BUF_SIZE      40    /* topic ±¾µØ¸±±¾£¬¹»·Å MQTT_TOPIC_CMD ²¢Áô '\0' */
+#define IPD_BUF_SIZE        128   /* ï¿½ï¿½Ö¡ +IPD ï¿½Øºï¿½ï¿½ï¿½ï¿½Þ£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô¼ï¿½ï¿½ï¿½ï¿½Ö½ï¿½ï¿½Ô±ï¿½ï¿½ï¿½Í¬ï¿½ï¿½ */
+#define IPD_LEN_MAX         2048  /* +IPD ï¿½ï¿½ï¿½ï¿½ï¿½Ö¶Îµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
+#define CMD_BUF_SIZE        32    /* ï¿½Ý´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ payloadï¿½ï¿½"on"/"off" Ö®ï¿½à£© */
+#define TOPIC_BUF_SIZE      40    /* topic ï¿½ï¿½ï¿½Ø¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ MQTT_TOPIC_CMD ï¿½ï¿½ï¿½ï¿½ '\0' */
 
 typedef enum {
-    IPD_IDLE = 0,   /* µÈ '+' */
-    IPD_I,          /* ÒÑÊÕ '+'£¬µÈ 'I' */
-    IPD_P,          /* µÈ 'P' */
-    IPD_D,          /* µÈ 'D' */
-    IPD_NUM1,       /* ¶ÁµÚÒ»¶ÎÊý×Ö£ºµ¥Á¬½Ó=ÔØºÉ³¤¶È£¬¶àÁ¬½Ó=link id */
-    IPD_NUM2,       /* ¶àÁ¬½Ó£º¶ÁµÚ¶þ¶ÎÊý×Ö=ÔØºÉ³¤¶È */
-    IPD_PAYLOAD,    /* ÊÕÔØºÉ£¬´æ½ø s_ipd_buf */
-    IPD_SKIP        /* ÔØºÉ³¬¹ý IPD_BUF_SIZE£ºÖ»¼ÆÊý²»´æ£¬ÊÕÂúºó¶ªÆú */
+    IPD_IDLE = 0,   /* ï¿½ï¿½ '+' */
+    IPD_I,          /* ï¿½ï¿½ï¿½ï¿½ '+'ï¿½ï¿½ï¿½ï¿½ 'I' */
+    IPD_P,          /* ï¿½ï¿½ 'P' */
+    IPD_D,          /* ï¿½ï¿½ 'D' */
+    IPD_NUM1,       /* ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ï¿½ï¿½ï¿½Ö£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½=ï¿½ØºÉ³ï¿½ï¿½È£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½=link id */
+    IPD_NUM2,       /* ï¿½ï¿½ï¿½ï¿½ï¿½Ó£ï¿½ï¿½ï¿½ï¿½Ú¶ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½=ï¿½ØºÉ³ï¿½ï¿½ï¿½ */
+    IPD_PAYLOAD,    /* ï¿½ï¿½ï¿½ØºÉ£ï¿½ï¿½ï¿½ï¿½ s_ipd_buf */
+    IPD_SKIP        /* ï¿½ØºÉ³ï¿½ï¿½ï¿½ IPD_BUF_SIZEï¿½ï¿½Ö»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½æ£¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
 } IPD_State_t;
 
 static IPD_State_t s_ipd_state = IPD_IDLE;
-static uint16_t    s_ipd_len   = 0;     /* +IPD ÉùÃ÷µÄÔØºÉ³¤¶È */
-static uint16_t    s_ipd_got   = 0;     /* ÒÑÊÕÔØºÉ×Ö½ÚÊý */
+static uint16_t    s_ipd_len   = 0;     /* +IPD ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ØºÉ³ï¿½ï¿½ï¿½ */
+static uint16_t    s_ipd_got   = 0;     /* ï¿½ï¿½ï¿½ï¿½ï¿½Øºï¿½ï¿½Ö½ï¿½ï¿½ï¿½ */
 static uint8_t     s_ipd_buf[IPD_BUF_SIZE];
 
-/* ¿ç +IPD Ö¡µÄ°ë°üÔÝ´æ£ºTCP »á°ÑÒ»¸ö MQTT °ü²ð½øÁ½Ö¡£¨broker ÍÆ retained Ê±¸ß·¢£©£¬
-   ½âÎöÆ÷ÔÚÖ¡Î²Óöµ½²»ÍêÕû°üÊ±°Ñ²Ð¶Î´æÕâÀï£¬ÏÂÒ»Ö¡¿ªÍ·ÏÈÆ´ÉÏÔÙ½âÎö */
+/* ï¿½ï¿½ +IPD Ö¡ï¿½Ä°ï¿½ï¿½ï¿½Ý´æ£ºTCP ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ MQTT ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¡ï¿½ï¿½broker ï¿½ï¿½ retained Ê±ï¿½ß·ï¿½ï¿½ï¿½ï¿½ï¿½
+   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¡Î²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½Ñ²Ð¶Î´ï¿½ï¿½ï¿½ï¿½ï£¬ï¿½ï¿½Ò»Ö¡ï¿½ï¿½Í·ï¿½ï¿½Æ´ï¿½ï¿½ï¿½Ù½ï¿½ï¿½ï¿½ */
 static uint8_t     s_carry[IPD_BUF_SIZE];
 static uint16_t    s_carry_len = 0;
 static uint8_t     s_combined[IPD_BUF_SIZE];
@@ -901,14 +947,14 @@ static char        s_pending_cmd[CMD_BUF_SIZE];
 static uint8_t     s_pending_valid = 0;
 
 /**
-  * @brief  ÔÚÒ»Ö¡ÍêÕûµÄ +IPD ÔØºÉÉÏ½âÎö MQTT °ü£¨Ò»Ö¡¿ÉÄÜº¬¶à¸ö°ü£©
-  * @param  buf: ÔØºÉÊ×µØÖ·£¬len: ÔØºÉ×Ö½ÚÊý
+  * @brief  ï¿½ï¿½Ò»Ö¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ +IPD ï¿½Øºï¿½ï¿½Ï½ï¿½ï¿½ï¿½ MQTT ï¿½ï¿½ï¿½ï¿½Ò»Ö¡ï¿½ï¿½ï¿½Üºï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+  * @param  buf: ï¿½Øºï¿½ï¿½×µï¿½Ö·ï¿½ï¿½len: ï¿½Øºï¿½ï¿½Ö½ï¿½ï¿½ï¿½
   */
 static void MQTT_ParseFrame(const uint8_t *buf, uint16_t len)
 {
-    /* topic / payload µÄ±¾µØ¸±±¾£º°üÄÚ×Ö¶Î²»´ø '\0'£¬±ØÐë¿½³öÀ´ÔÙÖÕÖ¹£¬
-       ²»ÄÜÔÚ buf ÉÏ¾ÍµØÐ´ÖÕÖ¹·û£¨¾ÉÊµÏÖµÄÔ½½çÐ´¾ÍÊÇÕâÃ´À´µÄ£©¡£
-       ÓÃ static ÊÇÎªÁË²»Õ¼Ö÷Ñ­»·Õ»£¨Stack_Size Ö»ÓÐ 0x400£©¡£ */
+    /* topic / payload ï¿½Ä±ï¿½ï¿½Ø¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¶Î²ï¿½ï¿½ï¿½ '\0'ï¿½ï¿½ï¿½ï¿½ï¿½ë¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¹ï¿½ï¿½
+       ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ buf ï¿½Ï¾Íµï¿½Ð´ï¿½ï¿½Ö¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Êµï¿½Öµï¿½Ô½ï¿½ï¿½Ð´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ã´ï¿½ï¿½ï¿½Ä£ï¿½ï¿½ï¿½
+       ï¿½ï¿½ static ï¿½ï¿½Îªï¿½Ë²ï¿½Õ¼ï¿½ï¿½Ñ­ï¿½ï¿½Õ»ï¿½ï¿½Stack_Size Ö»ï¿½ï¿½ 0x400ï¿½ï¿½ï¿½ï¿½ */
     static char topic_s[TOPIC_BUF_SIZE];
     static char payload_s[CMD_BUF_SIZE];
     uint16_t off = 0;
@@ -916,7 +962,7 @@ static void MQTT_ParseFrame(const uint8_t *buf, uint16_t len)
     while (off + 2 <= len)
     {
         uint8_t  type = buf[off] & 0xF0;
-        uint16_t rl   = buf[off + 1];    /* Ê£Óà³¤¶È£º±¾ÏîÄ¿ QoS 0 Ð¡°ü£¬µ¥×Ö½Ú¹»ÓÃ */
+        uint16_t rl   = buf[off + 1];    /* Ê£ï¿½à³¤ï¿½È£ï¿½ï¿½ï¿½ï¿½ï¿½Ä¿ QoS 0 Ð¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö½Ú¹ï¿½ï¿½ï¿½ */
         const uint8_t *body;
         uint16_t tlen, plen, i;
 
@@ -924,8 +970,8 @@ static void MQTT_ParseFrame(const uint8_t *buf, uint16_t len)
             U1_PRINTF("[MQTT] rx: remaining length >127 unsupported, frame dropped\r\n");
             return;
         }
-        /* ÎÀ±ø£º°üÌå±ØÐëÍêÕûÂäÔÚÕâÒ»Ö¡Àï¡£
-           ²»ÍêÕû = TCP ²ð°ü£º²Ð¶Î´æÈë carry£¬ÓëÏÂÒ»Ö¡Æ´½ÓºóÔÙ½âÎö£¨²»ÔÙ¶ªÆú£© */
+        /* ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ò»Ö¡ï¿½ï¡£
+           ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ = TCP ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð¶Î´ï¿½ï¿½ï¿½ carryï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ò»Ö¡Æ´ï¿½Óºï¿½ï¿½Ù½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ù¶ï¿½ï¿½ï¿½ï¿½ï¿½ */
         if (off + 2 + rl > len) {
             if (len > off && (uint16_t)(len - off) <= sizeof(s_carry)) {
                 uint16_t k;
@@ -946,24 +992,24 @@ static void MQTT_ParseFrame(const uint8_t *buf, uint16_t len)
         }
 
         if (type != MQTT_PKT_PUBLISH) {
-            /* CONNACK / SUBACK ÓÉ¸÷×ÔµÄÎÕÊÖÂ·¾¶ÓÃÇ©ÃûÉ¨Ãè´¦Àí£¬ÕâÀïÖ»Ìø¹ý */
+            /* CONNACK / SUBACK ï¿½É¸ï¿½ï¿½Ôµï¿½ï¿½ï¿½ï¿½ï¿½Â·ï¿½ï¿½ï¿½ï¿½Ç©ï¿½ï¿½É¨ï¿½è´¦ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö»ï¿½ï¿½ï¿½ï¿½ */
             off += 2 + rl;
             continue;
         }
 
-        /* ---- PUBLISH£ºbody = topic_len(2) + topic + payload ---- */
+        /* ---- PUBLISHï¿½ï¿½body = topic_len(2) + topic + payload ---- */
         body = buf + off + 2;
         tlen = ((uint16_t)body[0] << 8) | body[1];
 
-        /* ÎÀ±ø£ºtopic ³¤¶È²»ÄÜ³¬³öÊ£Óà³¤¶È */
+        /* ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½topic ï¿½ï¿½ï¿½È²ï¿½ï¿½Ü³ï¿½ï¿½ï¿½Ê£ï¿½à³¤ï¿½ï¿½ */
         if (tlen + 2 > rl) {
             U1_PRINTF("[MQTT] rx: bad topic len %u (rl=%u), frame dropped\r\n",
                       (unsigned)tlen, (unsigned)rl);
             return;
         }
-        plen = rl - 2 - tlen;   /* QoS 0 ÎÞ packet id£¬Ê£ÏÂµÄÈ«ÊÇ payload */
+        plen = rl - 2 - tlen;   /* QoS 0 ï¿½ï¿½ packet idï¿½ï¿½Ê£ï¿½Âµï¿½È«ï¿½ï¿½ payload */
 
-        /* ÎÀ±ø£ºÁ½¸ö×Ö¶Î¶¼Òª×°µÃÏÂ±¾µØ¸±±¾£¬ÇÒÁôµÃ³ö '\0' */
+        /* ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¶Î¶ï¿½Òª×°ï¿½ï¿½ï¿½Â±ï¿½ï¿½Ø¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ã³ï¿½ '\0' */
         if (tlen >= sizeof(topic_s) || plen >= sizeof(payload_s)) {
             U1_PRINTF("[MQTT] rx: topic/payload too long (%u/%u), frame dropped\r\n",
                       (unsigned)tlen, (unsigned)plen);
@@ -988,8 +1034,8 @@ static void MQTT_ParseFrame(const uint8_t *buf, uint16_t len)
 }
 
 /**
-  * @brief  °ÑÒ»¸ö UART ×Ö½ÚÎ¹¸ø +IPD ·ÖÖ¡Æ÷
-  * @note   ·Ç×èÈû¡¢ÎÞÑÓÊ±¡¢²»»Øµ÷£»¿É°²È«µØ´Ó·¢ËÍÂ·¾¶µ÷ÓÃ
+  * @brief  ï¿½ï¿½Ò»ï¿½ï¿½ UART ï¿½Ö½ï¿½Î¹ï¿½ï¿½ +IPD ï¿½ï¿½Ö¡ï¿½ï¿½
+  * @note   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½ï¿½Øµï¿½ï¿½ï¿½ï¿½É°ï¿½È«ï¿½Ø´Ó·ï¿½ï¿½ï¿½Â·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
   */
 static void MQTT_FeedByte(uint8_t ch)
 {
@@ -1001,7 +1047,7 @@ static void MQTT_FeedByte(uint8_t ch)
 
         case IPD_I:
             if (ch == 'I')      s_ipd_state = IPD_P;
-            else if (ch == '+') s_ipd_state = IPD_I;   /* Á¬Ðø '+'£¬Í£ÁôÔÚÆðÊ¼Ì¬ */
+            else if (ch == '+') s_ipd_state = IPD_I;   /* ï¿½ï¿½ï¿½ï¿½ '+'ï¿½ï¿½Í£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê¼Ì¬ */
             else                s_ipd_state = IPD_IDLE;
             break;
 
@@ -1019,11 +1065,11 @@ static void MQTT_FeedByte(uint8_t ch)
                 s_ipd_len = s_ipd_len * 10 + (uint16_t)(ch - '0');
                 if (s_ipd_len > IPD_LEN_MAX) { s_ipd_len = 0; s_ipd_state = IPD_IDLE; }
             }
-            else if (ch == ',') {                 /* ¶àÁ¬½Ó£ºµÚÒ»¶ÎÊÇ link id */
+            else if (ch == ',') {                 /* ï¿½ï¿½ï¿½ï¿½ï¿½Ó£ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ï¿½ï¿½ link id */
                 s_ipd_len   = 0;
                 s_ipd_state = IPD_NUM2;
             }
-            else if (ch == ':') {                 /* µ¥Á¬½Ó£ºµÚÒ»¶Î¾ÍÊÇ³¤¶È */
+            else if (ch == ':') {                 /* ï¿½ï¿½ï¿½ï¿½ï¿½Ó£ï¿½ï¿½ï¿½Ò»ï¿½Î¾ï¿½ï¿½Ç³ï¿½ï¿½ï¿½ */
                 s_ipd_got   = 0;
                 if (s_ipd_len == 0)                s_ipd_state = IPD_IDLE;
                 else if (s_ipd_len > IPD_BUF_SIZE) s_ipd_state = IPD_SKIP;
@@ -1051,7 +1097,7 @@ static void MQTT_FeedByte(uint8_t ch)
             s_ipd_got++;
             if (s_ipd_got >= s_ipd_len) {
                 if (s_carry_len > 0) {
-                    /* Ö¡Í·Æ´ÉÏÉÏÒ»Ö¡ÒÅÁôµÄ°ë°ü²Ð¶Î */
+                    /* Ö¡Í·Æ´ï¿½ï¿½ï¿½ï¿½Ò»Ö¡ï¿½ï¿½ï¿½ï¿½ï¿½Ä°ï¿½ï¿½ï¿½Ð¶ï¿½ */
                     uint16_t total = (uint16_t)(s_carry_len + s_ipd_got);
                     if (total <= IPD_BUF_SIZE) {
                         uint16_t k;
@@ -1074,7 +1120,7 @@ static void MQTT_FeedByte(uint8_t ch)
             break;
 
         case IPD_SKIP:
-            /* Ö¡Ì«³¤×°²»ÏÂ£º¼ÌÐø¼ÆÊýÖ±µ½Ö¡Î²£¬±£Ö¤ºóÐø×Ö½ÚÍ¬²½²»±»´òÂÒ */
+            /* Ö¡Ì«ï¿½ï¿½×°ï¿½ï¿½ï¿½Â£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö±ï¿½ï¿½Ö¡Î²ï¿½ï¿½ï¿½ï¿½Ö¤ï¿½ï¿½ï¿½ï¿½ï¿½Ö½ï¿½Í¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
             s_ipd_got++;
             if (s_ipd_got >= s_ipd_len) {
                 U1_PRINTF("[MQTT] rx: +IPD frame %u bytes > buf %u, dropped\r\n",
@@ -1098,15 +1144,15 @@ void ESP8266_MQTTProcessRx(void)
     while (USART3_GetByte(&ch))
         MQTT_FeedByte(ch);
 
-    /* »Øµ÷Í³Ò»ÔÚÕâÀïÅÉ·¢£¨Ö÷Ñ­»·ÉÏÏÂÎÄ£©£¬FeedByte ÄÚ²¿Ö»ÔÝ´æ */
+    /* ï¿½Øµï¿½Í³Ò»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É·ï¿½ï¿½ï¿½ï¿½ï¿½Ñ­ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä£ï¿½ï¿½ï¿½FeedByte ï¿½Ú²ï¿½Ö»ï¿½Ý´ï¿½ */
     if (s_pending_valid) {
         s_pending_valid = 0;
         MQTT_OnCmdReceived(s_pending_cmd);
     }
 }
 
-// Ô­°Í·¨ÔÆÊµÏÖ£¨ÒÑÏÂÏß£¬±£Áô¹©²Î¿¼£©
-#if 0  /* °Í·¨ÔÆÒÑÏÂÏß£¬±£Áô¹©²Î¿¼ */
+// Ô­ï¿½Í·ï¿½ï¿½ï¿½Êµï¿½Ö£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ß£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î¿ï¿½ï¿½ï¿½
+#if 0  /* ï¿½Í·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ß£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î¿ï¿½ */
 
 uint8_t ESP8266_BemfaConnect(void)
 {
@@ -1149,13 +1195,13 @@ uint8_t ESP8266_BemfaHeartbeat(void)
     return ESP8266_SendTCP((uint8_t *)cmd, (uint16_t)strlen(cmd));
 }
 
-#endif  /* °Í·¨ÔÆ´úÂë¿é½áÊø */
+#endif  /* ï¿½Í·ï¿½ï¿½Æ´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
 
 
 /**
-  * @brief  Unix Ê±¼ä´Á×ªÈÕÆÚÊ±¼ä£¨´¿ÕûÊýÔËËã£¬²»ÒÀÀµ localtime£©
-  * @param  ts: Unix Ê±¼ä´Á£¨Ãë£¬×Ô 1970-01-01 00:00:00 UTC£©
-  * @param  dt: Êä³ö RTC_DateTime_t£¬Year ´æ 0-99£¨Ïà¶Ô 2000 Äê£©
+  * @brief  Unix Ê±ï¿½ï¿½ï¿½×ªï¿½ï¿½ï¿½ï¿½Ê±ï¿½ä£¨ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ã£¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ localtimeï¿½ï¿½
+  * @param  ts: Unix Ê±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ë£¬ï¿½ï¿½ 1970-01-01 00:00:00 UTCï¿½ï¿½
+  * @param  dt: ï¿½ï¿½ï¿½ RTC_DateTime_tï¿½ï¿½Year ï¿½ï¿½ 0-99ï¿½ï¿½ï¿½ï¿½ï¿½ 2000 ï¿½ê£©
   */
 static void unix_to_datetime(uint32_t ts, RTC_DateTime_t *dt)
 {
@@ -1168,7 +1214,7 @@ static void unix_to_datetime(uint32_t ts, RTC_DateTime_t *dt)
     hour = ts % 24;
     day  = ts / 24;
 
-    /* ´Ó 1970-01-01 ÆðËãÌìÊý£¬ÖðÄêÖðÔÂ¿Û³ý */
+    /* ï¿½ï¿½ 1970-01-01 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Â¿Û³ï¿½ */
     y = 1970;
     while (1) {
         uint16_t yday = (((y % 4 == 0) && (y % 100 != 0)) || (y % 400 == 0)) ? 366 : 365;
@@ -1198,9 +1244,9 @@ static void unix_to_datetime(uint32_t ts, RTC_DateTime_t *dt)
 }
 
 /**
-  * @brief  Í¨¹ý NTP/UDP »ñÈ¡ÍøÂçÊ±¼ä£¨UTC+8 ±±¾©Ê±¼ä£©
-  * @param  dt: Êä³öÈÕÆÚÊ±¼ä½á¹¹Ìå
-  * @retval 1=³É¹¦£¬0=Ê§°Ü
+  * @brief  Í¨ï¿½ï¿½ NTP/UDP ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ä£¨UTC+8 ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ä£©
+  * @param  dt: ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½á¹¹ï¿½ï¿½
+  * @retval 1=ï¿½É¹ï¿½ï¿½ï¿½0=Ê§ï¿½ï¿½
   */
 uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
 {
@@ -1217,7 +1263,7 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
     U1_PRINTF("[NTP] Getting time from %s:%d...\r\n",
               ESP8266_NTP_SERVER_IP, ESP8266_NTP_SERVER_PORT);
 
-    /* 1. ¹Ø±Õµ±Ç°Á¬½Ó£¬Ñ­»·¼ì²âÖ±µ½ OK »ò ERROR */
+    /* 1. ï¿½Ø±Õµï¿½Ç°ï¿½ï¿½ï¿½Ó£ï¿½Ñ­ï¿½ï¿½ï¿½ï¿½ï¿½Ö±ï¿½ï¿½ OK ï¿½ï¿½ ERROR */
     for (retry = 0; retry < 3; retry++) {
         close_ok = ESP8266_SendAT("AT+CIPCLOSE\r\n", "OK", 2000);
         if (!close_ok) {
@@ -1228,10 +1274,10 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
     }
     delay_ms(200);
 
-    /* 2. Çå¿Õ USART3 ²ÐÁôÊý¾Ý */
+    /* 2. ï¿½ï¿½ï¿½ USART3 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
     while (USART3_GetByte(&ch)) MQTT_FeedByte(ch);
 
-    /* 3. È·±£ CIPMUX=0 µ¥Á¬½ÓÄ£Ê½ */
+    /* 3. È·ï¿½ï¿½ CIPMUX=0 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä£Ê½ */
     for (retry = 0; retry < 3; retry++) {
         if (ESP8266_SendAT("AT+CIPMUX=0\r\n", "OK", 2000)) {
             U1_PRINTF("[NTP] CIPMUX=0 OK\r\n");
@@ -1246,7 +1292,7 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
     }
     delay_ms(200);
 
-    /* 4. ½¨Á¢ UDP Á¬½Óµ½ NTP ·þÎñÆ÷ */
+    /* 4. ï¿½ï¿½ï¿½ï¿½ UDP ï¿½ï¿½ï¿½Óµï¿½ NTP ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
     snprintf(cmd, sizeof(cmd), "AT+CIPSTART=\"UDP\",\"%s\",%d\r\n",
             ESP8266_NTP_SERVER_IP, ESP8266_NTP_SERVER_PORT);
     if (!ESP8266_SendAT(cmd, "OK", 10000)) {
@@ -1256,21 +1302,21 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
     U1_PRINTF("[NTP] UDP connected to NTP server\r\n");
     delay_ms(500);
 
-    /* 5. ¹¹Ôì 48 ×Ö½Ú NTP ÇëÇó°ü */
+    /* 5. ï¿½ï¿½ï¿½ï¿½ 48 ï¿½Ö½ï¿½ NTP ï¿½ï¿½ï¿½ï¿½ï¿½ */
     memset(ntp_req, 0, sizeof(ntp_req));
     ntp_req[0] = 0x23;   /* LI=0, VN=4, Mode=3 (client) */
 
-    /* 6. ·¢ËÍ NTP ÇëÇó */
+    /* 6. ï¿½ï¿½ï¿½ï¿½ NTP ï¿½ï¿½ï¿½ï¿½ */
     if (!ESP8266_SendUDP(ntp_req, 48)) {
         U1_PRINTF("[NTP] send failed\r\n");
         goto restore_udp;
     }
     U1_PRINTF("[NTP] request sent, waiting response...\r\n");
 
-    /* 7. ½ÓÊÕ NTP ÏìÓ¦£¨Ô­Ê¼¶ÁÈ¡£¬ÈÆ¹ý +IPD ½âÎöÆ÷£©
-     *    °¢ÀïÔÆ NTP ·þÎñÆ÷Êµ¼Ê·¢ËÍ 56 ×Ö½Ú£¨º¬ 8 ×Ö½ÚÀ©Õ¹ÁãÌî³ä£©£¬
-     *    µ« ESP8266 +IPD Í·±¨¸æ 48 ×Ö½Ú£¬µ¼ÖÂ ESP8266_Receive() ½Ø¶Ï¡£
-     *    ¸ÄÓÃÔ­Ê¼ USART3 ¶ÁÈ¡£¬²¶»ñÈ«²¿Êý¾ÝºóÔÚ»º³åÇøÖÐ½âÎö¡£ */
+    /* 7. ï¿½ï¿½ï¿½ï¿½ NTP ï¿½ï¿½Ó¦ï¿½ï¿½Ô­Ê¼ï¿½ï¿½È¡ï¿½ï¿½ï¿½Æ¹ï¿½ +IPD ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+     *    ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ NTP ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Êµï¿½Ê·ï¿½ï¿½ï¿½ 56 ï¿½Ö½Ú£ï¿½ï¿½ï¿½ 8 ï¿½Ö½ï¿½ï¿½ï¿½Õ¹ï¿½ï¿½ï¿½ï¿½ä£©ï¿½ï¿½
+     *    ï¿½ï¿½ ESP8266 +IPD Í·ï¿½ï¿½ï¿½ï¿½ 48 ï¿½Ö½Ú£ï¿½ï¿½ï¿½ï¿½ï¿½ ESP8266_Receive() ï¿½Ø¶Ï¡ï¿½
+     *    ï¿½ï¿½ï¿½ï¿½Ô­Ê¼ USART3 ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È«ï¿½ï¿½ï¿½ï¿½ï¿½Ýºï¿½ï¿½Ú»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð½ï¿½ï¿½ï¿½ï¿½ï¿½ */
     {
         uint8_t raw[160];
         uint16_t raw_len = 0;
@@ -1296,7 +1342,7 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
 
         U1_PRINTF("[NTP] raw %u bytes\r\n", raw_len);
 
-        /* µ÷ÊÔ£º´òÓ¡Ô­Ê¼Êý¾ÝÊ®Áù½øÖÆ */
+        /* ï¿½ï¿½ï¿½Ô£ï¿½ï¿½ï¿½Ó¡Ô­Ê¼ï¿½ï¿½ï¿½ï¿½Ê®ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
 #ifdef DEBUG_NTP
         {
             uint16_t di;
@@ -1313,7 +1359,7 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
             goto restore_udp;
         }
 
-        /* ¶¨Î» +IPD ºóµÄ NTP ÔØºÉÆðÊ¼ */
+        /* ï¿½ï¿½Î» +IPD ï¿½ï¿½ï¿½ NTP ï¿½Øºï¿½ï¿½ï¿½Ê¼ */
         for (i = 0; i + 4 < raw_len; i++) {
             if (raw[i] == '+' && raw[i+1] == 'I' &&
                 raw[i+2] == 'P' && raw[i+3] == 'D') {
@@ -1332,7 +1378,7 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
         U1_PRINTF("[NTP] payload offset=%u avail=%u\r\n",
                   ntp_offset, raw_len - ntp_offset);
 
-        /* 8. ÌáÈ¡ Transmit Timestamp£¨±ê×¼ NTP Æ«ÒÆ 40-43£¬´ó¶ËÐò£© */
+        /* 8. ï¿½ï¿½È¡ Transmit Timestampï¿½ï¿½ï¿½ï¿½×¼ NTP Æ«ï¿½ï¿½ 40-43ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
         ntp_ts = ((uint32_t)raw[ntp_offset + 40] << 24) |
                  ((uint32_t)raw[ntp_offset + 41] << 16) |
                  ((uint32_t)raw[ntp_offset + 42] <<  8) |
@@ -1349,15 +1395,15 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
         goto restore_udp;
     }
 
-    /* 9. NTP Ê±¼ä´Á ¡ú Unix Ê±¼ä´Á£¨¼õÈ¥ 70 ÄêÆ«ÒÆ£© */
+    /* 9. NTP Ê±ï¿½ï¿½ï¿½ ï¿½ï¿½ Unix Ê±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È¥ 70 ï¿½ï¿½Æ«ï¿½Æ£ï¿½ */
     unix_ts = ntp_ts - 2208988800UL;
 
-    /* 10. UTC ¡ú ±±¾©Ê±¼ä£¨UTC+8£© */
+    /* 10. UTC ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ä£¨UTC+8ï¿½ï¿½ */
     unix_ts += (uint32_t)ESP8266_TIMEZONE_HOUR * 3600;
 
     U1_PRINTF("[NTP] ntp_ts=%lu unix_ts=%lu\r\n", ntp_ts, unix_ts);
 
-    /* 11. ×ª»»ÎªÈÕÆÚÊ±¼ä */
+    /* 11. ×ªï¿½ï¿½Îªï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ */
     unix_to_datetime(unix_ts, dt);
 
     U1_PRINTF("[NTP] OK: 20%02d-%02d-%02d %02d:%02d:%02d\r\n",
@@ -1365,13 +1411,13 @@ uint8_t ESP8266_GetNTPTime(RTC_DateTime_t *dt)
               dt->Hours, dt->Minutes, dt->Seconds);
 
 restore_udp:
-    /* ¹Ø±Õ NTP UDP Á¬½Ó */
+    /* ï¿½Ø±ï¿½ NTP UDP ï¿½ï¿½ï¿½ï¿½ */
     while (USART3_GetByte(&ch)) MQTT_FeedByte(ch);
     ESP8266_SendAT("AT+CIPCLOSE\r\n", NULL, 0);
     delay_ms(300);
 
 #if !USE_MQTT
-    /* »Ö¸´ UDP Á¬½Óµ½µçÄÔ */
+    /* ï¿½Ö¸ï¿½ UDP ï¿½ï¿½ï¿½Óµï¿½ï¿½ï¿½ï¿½ï¿½ */
     U1_PRINTF("[NTP] Restoring UDP to PC...\r\n");
     if (!ESP8266_ConnectUDP(ESP8266_UDP_SERVER_IP, ESP8266_UDP_SERVER_PORT)) {
         U1_PRINTF("[NTP] UDP restore FAIL, retrying...\r\n");
@@ -1379,27 +1425,27 @@ restore_udp:
         ESP8266_ConnectUDP(ESP8266_UDP_SERVER_IP, ESP8266_UDP_SERVER_PORT);
     }
 #else
-    /* MQTT Ä£Ê½ÏÂÃ»ÓÐ UDP Êý¾ÝÍ¨µÀ£ºÕâÀïµÄ»Ö¸´£¨CIPMUX 2s + CIPSTART 5s +
-       Ê§°ÜÖØÊÔ ~7s£©´¿ÊôÀË·Ñ£¬ÇÒ½ô½Ó×Å main »á CIPCLOSE ÖØ½¨ MQTT TCP£¬
-       Ìø¹ý¿ÉÊ¡ ~7-14s Æô¶¯Ê±¼ä£¨P2 ¶ÏÍøÆô¶¯ÓÅ»¯£©¡£ */
+    /* MQTT Ä£Ê½ï¿½ï¿½Ã»ï¿½ï¿½ UDP ï¿½ï¿½ï¿½ï¿½Í¨ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä»Ö¸ï¿½ï¿½ï¿½CIPMUX 2s + CIPSTART 5s +
+       Ê§ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ~7sï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ë·Ñ£ï¿½ï¿½Ò½ï¿½ï¿½ï¿½ï¿½ï¿½ main ï¿½ï¿½ CIPCLOSE ï¿½Ø½ï¿½ MQTT TCPï¿½ï¿½
+       ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê¡ ~7-14s ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ä£¨P2 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Å»ï¿½ï¿½ï¿½ï¿½ï¿½ */
 #endif
 
     return (dt->Year > 0 || dt->Month > 0) ? 1 : 0;
 }
 
 /**
-  * @brief  ·¢ËÍ¸æ¾¯ÐÅÏ¢£¨JSON ¸ñÊ½£©+ 5 ÃëÀäÈ´·ÀË¢ÆÁ
+  * @brief  ï¿½ï¿½ï¿½Í¸æ¾¯ï¿½ï¿½Ï¢ï¿½ï¿½JSON ï¿½ï¿½Ê½ï¿½ï¿½+ 5 ï¿½ï¿½ï¿½ï¿½È´ï¿½ï¿½Ë¢ï¿½ï¿½
   */
-static uint32_t s_last_send_tick = 0;   /* ÉÏ´Î·¢ËÍµÄÏµÍ³½ÚÅÄ */
-#define SEND_COOLDOWN_MS  5000          /* 5 ÃëÄÚ²»ÖØ¸´·¢ */
+static uint32_t s_last_send_tick = 0;   /* ï¿½Ï´Î·ï¿½ï¿½Íµï¿½ÏµÍ³ï¿½ï¿½ï¿½ï¿½ */
+#define SEND_COOLDOWN_MS  5000          /* 5 ï¿½ï¿½ï¿½Ú²ï¿½ï¿½Ø¸ï¿½ï¿½ï¿½ */
 
 void ESP8266_SendAlert(const char *msg)
 {
-    /* ÀäÈ´¼ì²é£ºÓÃ g_tick£¨delay.h ÀïµÄ 1ms È«¾Ö½ÚÅÄ£© */
+    /* ï¿½ï¿½È´ï¿½ï¿½é£ºï¿½ï¿½ g_tickï¿½ï¿½delay.h ï¿½ï¿½ï¿½ 1ms È«ï¿½Ö½ï¿½ï¿½Ä£ï¿½ */
     uint32_t now = g_tick;
     if ((now - s_last_send_tick) < SEND_COOLDOWN_MS)
     {
-        return;   /* ÀäÈ´ÖÐ£¬²»ÖØ¸´·¢ */
+        return;   /* ï¿½ï¿½È´ï¿½Ð£ï¿½ï¿½ï¿½ï¿½Ø¸ï¿½ï¿½ï¿½ */
     }
     s_last_send_tick = now;
 
@@ -1422,9 +1468,9 @@ void ESP8266_SendAlert(const char *msg)
 }
 
 /**
-  * @brief  ·¢ËÍÊý¾Ý£¨JSON ¸ñÊ½£©
-  * @param  topic:   Êý¾ÝÖ÷Ìâ/Ãû³Æ
-  * @param  payload: Êý¾ÝÄÚÈÝ×Ö·û´®
+  * @brief  ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý£ï¿½JSON ï¿½ï¿½Ê½ï¿½ï¿½
+  * @param  topic:   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½/ï¿½ï¿½ï¿½ï¿½
+  * @param  payload: ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö·ï¿½ï¿½ï¿½
   */
 void ESP8266_SendData(const char *topic, const char *payload)
 {
@@ -1441,17 +1487,17 @@ void ESP8266_SendData(const char *topic, const char *payload)
 }
 
 /**
-  * @brief  ESP8266 ½¡¿µ¼ì²éÓë×Ô¶¯»Ö¸´
-  * @note   Ö÷Ñ­»·Ã¿ 5 ·ÖÖÓµ÷ÓÃÒ»´Î¡£
-  *         1) AT ÎÞÏìÓ¦ ¡ú ¸´Î» + ÍêÕûÖØÁ¬£¨WiFi + UDP£©
-  *         2) AT ÓÐÏìÓ¦µ«Á¬Ðø·¢ËÍÊ§°Ü ¡ú ½öÖØ½¨ UDP Á¬½Ó
-  *         3) Ò»ÇÐÕý³£ ¡ú ²»×öÈÎºÎ²Ù×÷
+  * @brief  ESP8266 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô¶ï¿½ï¿½Ö¸ï¿½
+  * @note   ï¿½ï¿½Ñ­ï¿½ï¿½Ã¿ 5 ï¿½ï¿½ï¿½Óµï¿½ï¿½ï¿½Ò»ï¿½Î¡ï¿½
+  *         1) AT ï¿½ï¿½ï¿½ï¿½Ó¦ ï¿½ï¿½ ï¿½ï¿½Î» + ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½WiFi + UDPï¿½ï¿½
+  *         2) AT ï¿½ï¿½ï¿½ï¿½Ó¦ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½ ï¿½ï¿½ ï¿½ï¿½ï¿½Ø½ï¿½ UDP ï¿½ï¿½ï¿½ï¿½
+  *         3) Ò»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ÎºÎ²ï¿½ï¿½ï¿½
   */
 uint8_t ESP8266_CheckHealth(void)
 {
-    /* 1. ÇáÁ¿Ì½²â£º·¢ AT£¬1s ÄÚÎÞÏìÓ¦ÈÏÎªÄ£¿é¹ÒËÀ¡£
-       Ì½²â¼ÓÒ»´ÎÖØÊÔ£º³Ùµ½µÄ +IPD ÏÂÐÐÖ¡»áÓëÌ½²â×²³µ¼·µô OK£¬
-       µ¥´ÎÌ½²âÊ§°Ü¾Í Reset+ÍêÕûÖØÁ¬£¨20~70s µ÷¶È¶³½á£©ÊôÓÚÎóÉË£¨Êµ²â¸´ÏÖ£©¡£ */
+    /* 1. ï¿½ï¿½ï¿½ï¿½Ì½ï¿½â£ºï¿½ï¿½ ATï¿½ï¿½1s ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ó¦ï¿½ï¿½ÎªÄ£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+       Ì½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ï¿½ï¿½ï¿½Ô£ï¿½ï¿½Ùµï¿½ï¿½ï¿½ +IPD ï¿½ï¿½ï¿½ï¿½Ö¡ï¿½ï¿½ï¿½ï¿½Ì½ï¿½ï¿½×²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ OKï¿½ï¿½
+       ï¿½ï¿½ï¿½ï¿½Ì½ï¿½ï¿½Ê§ï¿½Ü¾ï¿½ Reset+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½20~70s ï¿½ï¿½ï¿½È¶ï¿½ï¿½á£©ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ë£ï¿½Êµï¿½â¸´ï¿½Ö£ï¿½ï¿½ï¿½ */
     uint8_t probe_ok = 0;
     for (uint8_t i = 0; i < 2 && !probe_ok; i++)
         probe_ok = ESP8266_SendAT("AT\r\n", "OK", 1000);
@@ -1470,12 +1516,12 @@ uint8_t ESP8266_CheckHealth(void)
         return 1;
     }
 
-    /* 2. Ä£¿é»î×Åµ«Á¬Ðø·¢ËÍÊ§°Ü ¡ú ÖØ½¨ MQTT£¨TCP + CONNECT + SUBSCRIBE£© */
+    /* 2. Ä£ï¿½ï¿½ï¿½ï¿½Åµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½ ï¿½ï¿½ ï¿½Ø½ï¿½ MQTTï¿½ï¿½TCP + CONNECT + SUBSCRIBEï¿½ï¿½ */
     if (s_send_fail_count >= 3)
     {
 #if USE_MQTT
         U1_PRINTF("[ESP8266] %d send fails, reconnecting MQTT...\r\n", s_send_fail_count);
-        if (ESP8266_MQTTConnect()) { if (ESP8266_MQTTSubscribe()) { s_mqtt_ok = 1; MQTT_ReportLightStatus(); MQTT_ReportModeStatus(); } }
+        if (ESP8266_MQTTConnect()) { if (ESP8266_MQTTSubscribe()) { s_mqtt_ok = 1; s_reconnect_streak = 0; MQTT_ReportLightStatus(); MQTT_ReportModeStatus(); } }
 #else
         U1_PRINTF("[ESP8266] %d send fails, reconnecting UDP...\r\n", s_send_fail_count);
         ESP8266_ConnectUDP(ESP8266_UDP_SERVER_IP, ESP8266_UDP_SERVER_PORT);

@@ -85,7 +85,7 @@ uint8_t AT24C02_WriteByte(uint8_t mem_addr, uint8_t data)
 }
 
 /**
-  * @brief  缓冲写：自动按 16 字节页边界切分（页写不可跨页，跨页会回卷覆盖页首）
+  * @brief  缓冲写：自动按 8 字节页边界切分（页写不可跨页，跨页会回卷覆盖页首）
   * @param  mem_addr: 起始存储地址
   * @param  buf:      数据缓冲区
   * @param  len:      数据长度（不得超过 256 - mem_addr）

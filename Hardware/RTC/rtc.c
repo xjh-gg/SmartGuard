@@ -1,11 +1,11 @@
 ﻿/**
   ******************************************************************************
   * @file    rtc.c
-  * @brief   RTC driver for STM32F407 -- LSE/LSI auto-fallback + Wakeup Timer 1s interrupt
+  * @brief   RTC 驱动实现：LSE/LSI 自动降级 + Wakeup Timer 1s 中断
   *
-  *  ?? Wakeup Timer ?????????? ST ? RTC_WakeUpCmd() ????? bug
-  *  ?? ?? while ?????????????????????
-  *  ?? ?????? [DBG] ???????????
+  *  Wakeup Timer 没用 ST 库的 RTC_WakeUpCmd()：库里等标志的 while 没有
+  *  超时保护，硬件 INITF 异常时会死等在里面。这里全程直写寄存器，
+  *  等待都有界，每步留 [DBG] 日志，卡住时一眼能定位。
   ******************************************************************************
   */
 #include "rtc.h"
@@ -53,7 +53,7 @@ static void SG_RTC_SetCompileTime(void)
                   year, month, date, hour, min, sec);
 }
 
-/* ========== ?????????? ST ? bit ??? ========== */
+/* ========== 直写寄存器用的位定义（绕开 ST 库封装） ========== */
 #define RTC_WPR_UNLOCK()  do { RTC->WPR = 0xCA; RTC->WPR = 0x53; } while(0)
 #define RTC_WPR_LOCK()    do { RTC->WPR = 0xFF; } while(0)
 
@@ -64,7 +64,7 @@ static void SG_RTC_SetCompileTime(void)
 
 #define RTC_ISR_WUTF      ((uint32_t)0x00000400)   /* ISR bit 10: wakeup triggered */
 #define RTC_ISR_WUTWF     ((uint32_t)0x00000004)   /* ISR bit 2: WUTR writable */
-/* RTC_ISR_INITF already defined in stm32f4xx.h ? don't redefine */
+/* RTC_ISR_INITF 已在 stm32f4xx.h 定义，这里不重复 */
 
 /* ========== Global state ========== */
 volatile uint32_t g_rtc_tick_ms = 0;
@@ -87,7 +87,7 @@ void SG_RTC_Init(void)
     /* 禁用 PC13 的 RTC Tamper 功能，释放给 OLED_CS 使用 */
     RTC->TAFCR &= ~(RTC_TAFCR_TAMP1E | RTC_TAFCR_TAMPIE);
 
-    /* ????LSE ?????????????? LSI */
+    /* 优先外部 LSE，等不到起振就降级内部 LSI */
     RCC_LSEConfig(RCC_LSE_ON);
     wait = 500000;
     while (wait-- && RCC_GetFlagStatus(RCC_FLAG_LSERDY) == RESET) { __NOP(); }
@@ -126,8 +126,8 @@ void SG_RTC_Init(void)
 /* ================================================================
  *                  SG_RTC_SetWakeup1s
  *
- *  ?????????? [DBG] ???????
- *  ?? RM0090 ?21.8.25: Wakeup Timer ????
+ *  每一步都有 [DBG] 日志，配置卡住时从最后一行日志定位
+ *  流程依据 RM0090 第 21.8.25 节：Wakeup Timer 配置顺序
  * ================================================================ */
 void SG_RTC_SetWakeup1s(void (*callback)(void))
 {
@@ -136,24 +136,24 @@ void SG_RTC_SetWakeup1s(void (*callback)(void))
 
     USART1_SendString("[DBG] WKUP: start config...\r\n");
 
-    /* ??? ????????? Calendar ?? Init Mode????
-     *  RM0090: WUTWF ??? Calendar ??? Init Mode ??????
-     *  ???? RTC_Init() ? ExitInitMode ??????INITF ??? 1?
-     *  ????? WUTWF ??????????
+    /* 先确认 Calendar 已退出 Init Mode
+     *  RM0090：WUTWF 只在 Calendar 离开 Init Mode 之后才会置位。
+     *  本板偶尔 RTC_Init() 后 ExitInitMode 清不掉 INITF（恒 1），
+     *  那样 WUTWF 永远等不到，后面全是白等。
      */
     PWR_BackupAccessCmd(ENABLE);
     RTC_WPR_UNLOCK();
 
     USART1_Printf("[DBG] WKUP: before exit init, ISR=0x%08lX\r\n", (unsigned long)RTC->ISR);
 
-    /* ???? Calendar Init Mode ?? ????????? */
+    /* 等 Calendar 退出 Init Mode（有界等待） */
     RTC_ExitInitMode();
     wait = 200000;
     while (wait-- && (RTC->ISR & RTC_ISR_INITF) != 0) { __NOP(); }
 
     if ((RTC->ISR & RTC_ISR_INITF) != 0) {
         USART1_SendString("[DBG] WKUP: INITF still 1 after ExitInitMode! Try again...\r\n");
-        /* ??????????/? Init Mode */
+        /* 再进一次、出一次 Init Mode 试一次 */
         RTC_EnterInitMode();
         RTC_ExitInitMode();
         wait = 200000;
@@ -162,11 +162,11 @@ void SG_RTC_SetWakeup1s(void (*callback)(void))
 
     USART1_Printf("[DBG] WKUP: INITF cleared, ISR=0x%08lX\r\n", (unsigned long)RTC->ISR);
 
-    /* Step 1: ? WUTE ?? ???????? Init Mode ? */
+    /* Step 1: 清 WUTE（写 WUTR 前必须先停 Wakeup） */
     RTC->CR &= ~RTC_CR_WUTE;
     USART1_SendString("[DBG] WKUP: WUTE cleared\r\n");
 
-    /* Step 2: ? WUTWF ?? ????????????? WUTR ?? */
+    /* Step 2: 等 WUTWF 置位（只有置位后才允许写 WUTR） */
     wait = 2000000;
     while (wait-- && (RTC->ISR & RTC_ISR_WUTWF) == 0) { __NOP(); }
     if ((RTC->ISR & RTC_ISR_WUTWF) == 0) {
@@ -177,8 +177,8 @@ void SG_RTC_SetWakeup1s(void (*callback)(void))
     }
     USART1_SendString("[DBG] WKUP: WUTWF=1 OK\r\n");
 
-    /* Step 3: ? WUTF ?????????????*/
-    RTC->ISR = ~RTC_ISR_WUTF;   /* WUTF ? RC_W0???? 1?*/
+    /* Step 3: 清 WUTF（避免历史残留标志误触发）*/
+    RTC->ISR = ~RTC_ISR_WUTF;   /* WUTF 是 rc_w0 类型：写 0 清除，其余位写 1 保持 */
     USART1_SendString("[DBG] WKUP: WUTF cleared\r\n");
 
     /* Step 4: 时钟源 = RTC/16 (直分频，绕开同步预分频器)
@@ -191,7 +191,7 @@ void SG_RTC_SetWakeup1s(void (*callback)(void))
     RTC->WUTR = 2047;
     USART1_SendString("[DBG] WKUP: WUTR=2047 (1s)\r\n");
 
-    /* Step 6: ???? WUTWF ?? ? WUTR ??????? WUTWF */
+    /* Step 6: 写 WUTR 后 WUTWF 会清 0，重新等它置位再开 WUTE */
     wait = 2000000;
     while (wait-- && (RTC->ISR & RTC_ISR_WUTWF) == 0) { __NOP(); }
     if ((RTC->ISR & RTC_ISR_WUTWF) == 0) {
@@ -200,11 +200,11 @@ void SG_RTC_SetWakeup1s(void (*callback)(void))
         USART1_SendString("[DBG] WKUP: WUTWF=1 after WUTR\r\n");
     }
 
-    /* Step 7: ?? RTC Wakeup ?? */
+    /* Step 7: 开 RTC Wakeup 中断 */
     RTC_ClearITPendingBit(RTC_IT_WUT);
     RTC_ITConfig(RTC_IT_WUT, ENABLE);
 
-    /* Step 8: EXTI Line22 ???RTC_WKUP ??????*/
+    /* Step 8: EXTI Line22 是 RTC_WKUP 的专用中断线 */
     EXTI_InitTypeDef exti;
     exti.EXTI_Line    = EXTI_Line22;
     exti.EXTI_Mode    = EXTI_Mode_Interrupt;
@@ -237,7 +237,7 @@ void SG_RTC_SetWakeup1s(void (*callback)(void))
         USART1_Printf("[DBG] WKUP: WUTF not seen after 1.5s, ISR=0x%08lX\r\n", (unsigned long)RTC->ISR);
     }
 
-    /* ?? */
+    /* 收尾：上锁并关闭备份域访问 */
     RTC_WPR_LOCK();
     PWR_BackupAccessCmd(DISABLE);
 
@@ -264,7 +264,7 @@ void RTC_IRQ_Callback(void)
 }
 
 /* ================================================================
- *                  ????
+ *                  时间读写 / 格式化
  * ================================================================ */
 uint8_t SG_RTC_IsInitialized(void)
 {

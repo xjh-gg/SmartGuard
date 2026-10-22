@@ -1,15 +1,18 @@
 ﻿/**
   * @file    main.c
-  * @brief   SmartGuard v0.4 — 智能空间守护 Agent
+  * @brief   SmartGuard v0.7.2 — 智能空间守护系统主程序
   *
   * 硬件清单 (已全部验证):
-  *   ADC         — 光敏电阻 PF7/ADC3_IN5, 电位器 PA5/ADC1_IN5
+  *   ADC         — 光敏电阻 PF7/ADC3_IN5, MQ-2 烟雾 PA4/ADC1_IN4
   *   HCSR04      — Trig=PC8, Echo=PC6
   *   DHT11       — PG9 (一次读回 temp+humi)
-  *   BoardKey    — S1=PA0, S2=PE2, S3=PE3, S4=PE4 (板载按键)
-  *   LED         — PF9/PF10/PE13/PE14 (低电平亮), BEEP: PF8
+  *   BoardKey    — S1=PA0, S2=PE2, S3=PE3, S4=PE4 (板载按键，全部低电平有效)
+  *   LED         — PF9/PF10/PE13/PE14 (低电平亮), BEEP: PF8 (TIM13 PWM)
   *   OLED SSD1306 — PB0=CLK PF11=MOSI PB1=DC PC13=CS1, CS2接VCC
+  *   MPU6050     — 软件 IIC PB8/PB9 (0x68)，与 AT24C02(0x50) 同总线
+  *   W25Qxx      — 软件 SPI CS=PB14 SCK=PB3 MISO=PB4 MOSI=PB5
   *   ESP8266     — USART3 PB10/PB11, 115200bps
+  *   ESP32-CAM   — USART2 PA2/PA3, 115200bps
   */
 
 /* ============ 编译开关（必须在 include 之前定义）============ */
@@ -35,7 +38,14 @@
 #include "sensor_hub.h"
 #include "decision_engine.h"   /* 已经 include USE_OLED/USE_ESP8266 定义 */
 #include "adaptive_threshold.h"
+#if USE_FREERTOS
+#include "FreeRTOS.h"
+#include "task.h"
+#include "queue.h"
+#include "semphr.h"
+#else
 #include "scheduler.h"
+#endif
 #include "oled.h"
 #include "iwdg.h"
 #include "config_store.h"
@@ -105,8 +115,60 @@
 static Sensor_Data_t g_sensor;
 static Guard_Mode_t  g_mode    = MODE_AWAY;   /* 默认离家模式：入侵检测开启 */
 static Alert_Type_t  g_alert   = ALERT_NONE;
-static Alert_Type_t  g_manual_alert = ALERT_NONE;  /* 按键手动触发的测试告警 */
+/* 按键/MQTT 手动触发的测试告警。跨任务：comm 任务写、decision 任务读，
+   enum 单字访问在 M4 上原子，加 volatile 防止编译器缓存到寄存器。 */
+static volatile Alert_Type_t g_manual_alert = ALERT_NONE;
 static uint32_t      g_last_alarm_tick = 0;
+/* 长按 S3 置位：请求决策任务重新学习 20s 基线（换房间/进纸箱演示）。
+   fast 任务写、decision 任务读，单字节标志用 volatile 即可，无需队列。 */
+static volatile uint8_t g_relearn_request = 0;
+
+#if USE_FREERTOS
+/* ============ FreeRTOS 对象（main 启动早期创建，任务启动前就绪） ============ */
+
+/* 按键任务 -> 通信任务、决策任务 -> 通信任务 的事件队列。
+   设计原因：ESP8266(USART3 AT) 与 ESP32-CAM(USART2) 的所有访问必须串行化，
+   原来的协作式调度天然互斥，改成抢占后统一收敛到 TaskComm 一个任务里执行。 */
+typedef enum {
+    EVT_KEY_MODE = 1,   /* 物理按键切换模式，value=Guard_Mode_t：需补报 broker */
+    EVT_ALERT    = 2    /* 告警事件，value=Alert_Type_t：MQTT 上报 + 入侵抓拍 */
+} comm_evt_type_t;
+
+typedef struct {
+    uint8_t type;       /* comm_evt_type_t */
+    uint8_t value;      /* 事件参数 */
+} comm_evt_t;
+
+static QueueHandle_t     s_comm_queue = (QueueHandle_t)0;
+static SemaphoreHandle_t s_i2c_mutex  = (SemaphoreHandle_t)0;  /* MPU6050/AT24C02 共线 */
+static SemaphoreHandle_t s_oled_mutex = (SemaphoreHandle_t)0;  /* OLED 软件 SPI */
+
+/* 任务优先级（数字越大越高；0 为 idle，configMAX_PRIORITIES=7） */
+#define PRIO_FAST       4   /* 按键 + 看门狗 */
+#define PRIO_TAMPER     3   /* 防拆 5Hz */
+#define PRIO_DECISION   2   /* 采集决策 2s */
+#define PRIO_COMM       2   /* 网络收发（与 decision 同优先级，时间片轮转） */
+#define PRIO_DISPLAY    1   /* OLED/RTC 1s */
+
+/* 任务栈深（单位 word=4B）：comm 需要最大（MQTT/NTP 帧拼包路径局部变量多） */
+#define STACK_FAST      512
+#define STACK_TAMPER    320
+#define STACK_DECISION  640
+#define STACK_COMM      1024
+#define STACK_DISPLAY   640
+
+static void PostCommEvent(uint8_t type, uint8_t value)
+{
+    comm_evt_t evt;
+    evt.type  = type;
+    evt.value = value;
+    if (s_comm_queue != (QueueHandle_t)0)
+    {
+        /* 满了直接丢（告警 5s 冷却会重发；模式状态有 retain 最终一致兜底） */
+        (void)xQueueSend(s_comm_queue, &evt, 0);
+    }
+}
+#endif /* USE_FREERTOS */
 
 #if USE_OLED
 static char          s_time_buf[10] = "00:00:00";   /* 当前时间，OLED 状态栏用 */
@@ -123,8 +185,8 @@ static float   s_gyro_zero_gz = 0.0f;
 /* ============ MQTT 回调（替代原巴法云） ============ */
 
 /* 灯状态跟踪（供 MQTT_ReportLightStatus 和 MQTT_OnCmdReceived 使用）：
-   'on' = PE13 低电平点亮；'off' = PE13 高电平熄灭。
-   初值 'off' 与 LED_Init() -> LED_AllOff() 的实际效果一致。 */
+   on/off 命令控制的是 ESP32-CAM 补光灯（Flash LED, GPIO4）；
+   初值 'off' 与 CAM 固件上电默认关灯一致。 */
 static const char *g_light_state = "off";
 
 /* ---- 下行命令加固（2026-09-22 LED flood 事故后） ----
@@ -185,20 +247,37 @@ static void CmdReportFlush(void)
 /* ESP8266 下行控制指令回调：收到 home/light/cmd 的 PUBLISH 时调用 */
 void MQTT_OnCmdReceived(const char *payload)
 {
-    /* led.c 的 case 编号比 led.h 的宏名大 1（API 是 1-based，宏是 0-based）：
-       case 1→LED0=PF9  case 2→LED1=PF10  case 3→LED2=PE13  case 4→LED3=PE14
-       这里用 3 → PE13（GEC-M4 原理图 Page 2 的 FSMC_D10，板载 D3），
-       全项目仅此处驱动，不会被告警灯逻辑（用 case 1 = PF9）覆盖。 */
+    /* on/off = 控制 ESP32-CAM 补光灯（板载 Flash LED，GPIO4），
+       经 USART2 发 LEDON/LEDOFF 指令；CAM 确认后才更新状态并上报。
+       失败时状态不变但仍上报（把网页乐观翻转拉回真实状态）。 */
     if (strcmp(payload, "on") == 0) {
+#if USE_ESP32_CAM
+        if (ESP32CAM_SetLed(1) == CAM_OK) {
+            g_light_state = "on";
+            USART1_Printf("[MQTT] CMD=on -> CAM LED ON\r\n");
+        } else {
+            USART1_Printf("[MQTT] CMD=on -> CAM LED FAIL\r\n");
+        }
+#else
         LED_ON(3);
         g_light_state = "on";
         USART1_Printf("[MQTT] CMD=on\r\n");
+#endif
         ReportLightCoalesced();
     }
     else if (strcmp(payload, "off") == 0) {
+#if USE_ESP32_CAM
+        if (ESP32CAM_SetLed(0) == CAM_OK) {
+            g_light_state = "off";
+            USART1_Printf("[MQTT] CMD=off -> CAM LED OFF\r\n");
+        } else {
+            USART1_Printf("[MQTT] CMD=off -> CAM LED FAIL\r\n");
+        }
+#else
         LED_OFF(3);
         g_light_state = "off";
         USART1_Printf("[MQTT] CMD=off\r\n");
+#endif
         ReportLightCoalesced();
     }
     else if (strcmp(payload, "HOME") == 0) {
@@ -276,12 +355,6 @@ static void Hardware_InitAll(void)
     USART1_SendString("[INIT] ADC...");   ADC_Hardware_Init(); USART1_SendString("OK\r\n");
     USART1_SendString("[INIT] HCSR04...");HCSR04_Init(); USART1_SendString("OK\r\n");
     USART1_SendString("[INIT] DHT11..."); DHT11_Init();  USART1_SendString("OK\r\n");
-
-#if USE_MATRIX_KEY
-    USART1_SendString("[INIT] MatrixKey...");
-    Matrix_Key_Init();
-    USART1_SendString("OK\r\n");
-#endif
 
 #if USE_BOARD_KEY
     USART1_SendString("[INIT] BoardKey...");
@@ -419,7 +492,20 @@ static void TamperUpdate(void)
     static uint8_t  s_hit_hist[8] = {0};    /* 最近 8 次采样的命中环形历史 */
     static uint8_t  s_hit_idx = 0;          /* 环形历史写入位置 */
 
+    /* MPU6050 与 AT24C02 共用同一条软件 I2C（PB8/PB9）：防拆任务(5Hz)与
+       display 任务的配置落盘可能并发。FreeRTOS 下用互斥锁串行化整条总线，
+       50ms 拿不到锁说明总线被长事务占用，本轮直接放弃，等下个 200ms 节拍。
+       初始化阶段（零偏校准）在调度器启动前完成，无竞争，不需要锁。 */
+#if USE_FREERTOS
+    if (xSemaphoreTake(s_i2c_mutex, pdMS_TO_TICKS(50)) != pdTRUE)
+    {
+        return;
+    }
     MPU6050_GetPhysical(&ax, &ay, &az, &gx, &gy, &gz, &t);
+    xSemaphoreGive(s_i2c_mutex);
+#else
+    MPU6050_GetPhysical(&ax, &ay, &az, &gx, &gy, &gz, &t);
+#endif
 
     /* 减去上电学到的零偏 */
     gx_off = gx - s_gyro_zero_gx;
@@ -503,10 +589,19 @@ static void SampleAllSensors(void)
         g_sensor.distance = (dm > 0.0f) ? dm : g_sensor.distance;
     }
 
-    /* DHT11 读取失败时不覆盖 g_sensor，保留上一次有效值（dht11.c 失败不写输出参数） */
-    if (DHT11_Read_Data(&temp, &humi) == 0) {
-        g_sensor.temperature = temp;
-        g_sensor.humidity    = humi;
+    /* DHT11 读取失败时不覆盖 g_sensor，保留上一次有效值（dht11.c 失败不写输出参数）。
+       决策节拍提速到 1s 后，DHT11 仍保持 2s/次（器件手册采样周期下限 1s，
+       且温湿度慢变无需更高频率），用调用计数软分频。 */
+    {
+        static uint8_t s_dht_div = 0;
+        s_dht_div = (uint8_t)(s_dht_div + 1u);
+        if ((s_dht_div & 0x01u) != 0u)
+        {
+            if (DHT11_Read_Data(&temp, &humi) == 0) {
+                g_sensor.temperature = temp;
+                g_sensor.humidity    = humi;
+            }
+        }
     }
     g_sensor.mq2_adc     = ADC_ReadMQ2();
 
@@ -521,12 +616,35 @@ static void SampleAllSensors(void)
    直接在按键路径擦除有顶爆 IWDG(2s) 的风险；延迟合并且能合并连按（P3-#2） */
 static volatile uint8_t s_config_dirty = 0;
 
+#if USE_OLED
+/* 按键后立即重绘主界面（等不到 display 任务的 1s 节拍）。
+   告警页显示中时不覆盖；FreeRTOS 下与 display 任务用 s_oled_mutex 互斥。
+   S3 短按改到松手触发后也需要复用本函数，故抽出。 */
+static void RedrawHomeOled(void)
+{
+    if (g_alert != ALERT_NONE) return;
+#if USE_FREERTOS
+    if (xSemaphoreTake(s_oled_mutex, portMAX_DELAY) == pdTRUE)
+    {
+        OLED_ShowHomeScreen(&g_sensor, g_mode, s_time_buf,
+                            s_wifi_status, s_mqtt_status);
+        xSemaphoreGive(s_oled_mutex);
+    }
+#else
+    OLED_ShowHomeScreen(&g_sensor, g_mode, s_time_buf,
+                        s_wifi_status, s_mqtt_status);
+#endif
+}
+#endif
+
 static void HandleBoardKey(void)
 {
     static uint8_t  s_last_key = 0;
     static uint32_t s_last_accept = 0;   /* 上次有效变化时刻（消抖窗起点） */
     static uint32_t s_s4_press = 0;      /* S4 按下时刻（长按计时） */
     static uint8_t  s_s4_long = 0;       /* S4 长按已触发标志 */
+    static uint32_t s_s3_press = 0;      /* S3 按下时刻（长按计时） */
+    static uint8_t  s_s3_long = 0;       /* S3 长按已触发标志：长按=重学基线 */
     uint8_t key = KEY_Scan();
     uint8_t prev;
 
@@ -535,6 +653,15 @@ static void HandleBoardKey(void)
         s_s4_long = 1;
         USART1_SendString("-> EVENT LOG DUMP\r\n");
         EventLog_Dump(20);
+    }
+
+    /* S3 按住 ≥2s：请求重新学习基线（换房间 / 纸箱演示校准）。
+       实际 20s 阻塞学习由 task_decision 执行（FreeRTOS 下不饿死其他任务）。
+       长按触发后本次松手不再执行短按的"切 SLEEP"动作。 */
+    if (key == S3 && s_last_key == S3 && !s_s3_long && (g_tick - s_s3_press) >= 2000) {
+        s_s3_long = 1;
+        g_relearn_request = 1;
+        USART1_SendString("-> RE-LEARN BASELINE REQUEST: keep device STILL for 20s\r\n");
     }
 
     if (key == s_last_key) return;   /* 无变化，跳过 */
@@ -546,6 +673,7 @@ static void HandleBoardKey(void)
     s_last_accept = g_tick;
 
     if (key == S4) { s_s4_press = g_tick; s_s4_long = 0; }
+    if (key == S3) { s_s3_press = g_tick; s_s3_long = 0; }
 
     /* S4 短按（松开且未达长按）：手动告警测试 */
     if (prev == S4 && key == 0 && !s_s4_long) {
@@ -554,42 +682,81 @@ static void HandleBoardKey(void)
         USART1_SendString("-> MANUAL ALERT TEST\r\n");
     }
 
+    /* S3 短按（松开且未达长按 2s）：切 SLEEP。
+       特意放到松手沿，避免按 S3 长按时先误切一次模式。 */
+    if (prev == S3 && key == 0 && !s_s3_long) {
+        g_mode = MODE_SLEEP;
+        DecisionEngine_SetMode(g_mode);
+        s_config_dirty = 1;
+        USART1_SendString("-> MODE SLEEP\r\n");
+#if USE_FREERTOS
+        PostCommEvent(EVT_KEY_MODE, (uint8_t)g_mode);
+#else
+        MQTT_ReportModeStatus();
+#endif
+#if USE_OLED
+        RedrawHomeOled();
+#endif
+    }
+
     if (key == 0) return;            /* 松开，不触发 */
 
     switch (key) {
-        case S1: g_mode = MODE_HOME;  DecisionEngine_SetMode(g_mode); s_config_dirty = 1; USART1_SendString("-> MODE HOME\r\n");  MQTT_ReportModeStatus();  break;
-        case S2: g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode); s_config_dirty = 1; USART1_SendString("-> MODE AWAY\r\n");  MQTT_ReportModeStatus();  break;
-        case S3: g_mode = MODE_SLEEP; DecisionEngine_SetMode(g_mode); s_config_dirty = 1; USART1_SendString("-> MODE SLEEP\r\n"); MQTT_ReportModeStatus(); break;
+        case S1: g_mode = MODE_HOME;  DecisionEngine_SetMode(g_mode); s_config_dirty = 1; USART1_SendString("-> MODE HOME\r\n");
+#if USE_FREERTOS
+                /* 上报走通信任务，避免与遥测/心跳并发抢 USART3 */
+                PostCommEvent(EVT_KEY_MODE, (uint8_t)g_mode);
+#else
+                MQTT_ReportModeStatus();
+#endif
+                break;
+        case S2: g_mode = MODE_AWAY;  DecisionEngine_SetMode(g_mode); s_config_dirty = 1; USART1_SendString("-> MODE AWAY\r\n");
+#if USE_FREERTOS
+                PostCommEvent(EVT_KEY_MODE, (uint8_t)g_mode);
+#else
+                MQTT_ReportModeStatus();
+#endif
+                break;
+        /* S3 已改为：短按松手切 SLEEP，长按 2s 重新学习基线 */
     }
 
 #if USE_OLED
     /* 按键后立即重绘主界面（Row 1 模式/时间/WiFi/MQTT），避免等 1 秒 tick。
-       告警页显示中时不覆盖；代价是一次整屏重绘约 50ms，仅按键时发生 */
-    if (g_alert == ALERT_NONE) {
-        OLED_ShowHomeScreen(&g_sensor, g_mode, s_time_buf,
-                            s_wifi_status, s_mqtt_status);
-    }
+       告警页显示中时不覆盖；代价是一次整屏重绘约 50ms，仅按键时发生。
+       FreeRTOS 下该重绘发生在 fast 任务，必须与 display 任务的 OLED 刷新互斥。 */
+    RedrawHomeOled();
 #endif
 }
 #endif
 
 #if USE_OLED
 /* 基线学习进度回调：注册给 AT_LearnBaseline，每秒一次。
-   进度 80→98 平滑推进 + 剩余秒数倒计时，消灭学习期画面假死 */
+   进度 80→98 平滑推进 + 剩余秒数倒计时，消灭学习期画面假死。
+   手动重学发生在调度器运行中（TaskDecision），与 TaskDisplay 的 1s 刷屏
+   并发抢软件 SPI，必须取 s_oled_mutex；上电学习时调度器未启动、锁空闲，
+   take 立即成功，两条调用路径共用本函数均安全。 */
 static void BootLearnProgress(uint8_t done, uint8_t total)
 {
     char st[20];
     snprintf(st, sizeof(st), "Learning %us", (unsigned)(total - done));
+#if USE_FREERTOS
+    xSemaphoreTake(s_oled_mutex, portMAX_DELAY);
+#endif
     OLED_ShowBootProgress(80 + (uint16_t)18 * done / total, st);
+#if USE_FREERTOS
+    xSemaphoreGive(s_oled_mutex);
+#endif
 }
 #endif
 
 /* ============ 调度任务（scheduler，周期基于真实 g_tick，无时漂） ============ */
 
-/* 0 周期：每轮必跑 —— MQTT 下行处理（保延迟）+ 按键 + 喂狗（看门狗不进长周期任务） */
+/* 裸机：0 周期每轮必跑 —— MQTT 下行处理 + 按键 + 喂狗。
+   FreeRTOS：MQTT 下行与补报移入 TaskComm 串行执行（USART3 单点访问），
+   本任务（TaskFast 壳，50ms 周期）只剩按键扫描与看门狗喂狗。 */
 static void task_fast(void)
 {
-#if USE_MQTT
+#if USE_MQTT && !USE_FREERTOS
     ESP8266_MQTTProcessRx();
     CmdReportFlush();   /* 被合并的灯/模式上报在此补报（500ms 窗口过后） */
 #endif
@@ -609,7 +776,49 @@ static void task_tamper(void)
 /* 每 2s 采集 + 决策 + 告警统一出口 */
 static void task_decision(void)
 {
+    /* ===== 长按 S3 请求的重新学习（换房间 / 进纸箱演示前校准）=====
+       FreeRTOS：本任务在 AT_LearnBaseline 内阻塞 20s 期间，delay_ms 退化为
+       vTaskDelay，fast 喂狗/按键、tamper 防拆、comm 网络、display 刷新全部
+       照常被调度（函数内另带分段 IWDG_Feed 双保险）；
+       裸机：与上电阻塞学习行为相同，协作调度器停转 20s，IWDG 由函数内喂。 */
+    if (g_relearn_request) {
+        g_relearn_request = 0;
+        g_alert = ALERT_NONE;
+        g_manual_alert = ALERT_NONE;
+        USART1_SendString("\r\n[BASELINE] Manual re-learn start (20s, keep device STILL)...\r\n");
+        AT_Init();                 /* is_learned=0，学习期决策静默 */
+#if USE_OLED
+        AT_SetProgressCallback(BootLearnProgress);
+#endif
+        AT_LearnBaseline();
+#if USE_OLED
+        AT_SetProgressCallback(0);
+#endif
+        /* AT24C02 软件 I2C 与 MPU6050 共 PB8/PB9：落盘必须与 TaskTamper 互斥 */
+#if USE_FREERTOS
+        xSemaphoreTake(s_i2c_mutex, portMAX_DELAY);
+#endif
+        if (Config_Save((const AT_Baseline_t *)AT_GetBaseline(), g_mode)) {
+            USART1_SendString("[BASELINE] re-learn saved OK\r\n");
+        } else {
+            USART1_SendString("[BASELINE] re-learn save FAIL\r\n");
+        }
+#if USE_FREERTOS
+        xSemaphoreGive(s_i2c_mutex);
+#endif
+        /* 新环境重新采集布防静息距离（给 10s 撤离窗口） */
+        DecisionEngine_RestartArm();
+        USART1_SendString("[BASELINE] re-learn done, next cycle resume decision\r\n");
+        return;
+    }
+
     SampleAllSensors();
+
+    /* 基线未就绪（任何学习期）：只维持采样，不决策、不上报，
+       避免学习期箱内闷热 / 距离箱壁近触发误报 */
+    if (!AT_GetBaseline()->is_learned) {
+        return;
+    }
 
     /* 消费 MQTT 重连阻塞期间粘滞下来的防拆命中（见 TamperWaitHook） */
     if (s_tamper_sticky) {
@@ -646,8 +855,10 @@ static void task_decision(void)
                 if (state_changed) {
                     EventLog_Add((uint8_t)effective, &g_sensor, (uint8_t)g_mode);
 
-                    /* 分级告警音（P2-5）：三种告警靠听觉可辨，不用看屏。
-                       阻塞最长 1.2s < IWDG 2s 窗口，仅在状态翻转时播放 */
+                    /* 分级告警音（P2-5）：比赛演示期间 BEEP_ENABLE=0 整体静音，
+                       恢复时把 beep.h 的 BEEP_ENABLE 改 1 即可（阻塞最长 1.2s
+                       < IWDG 2s 窗口，仅在状态翻转时播放） */
+#if BEEP_ENABLE
                     switch (effective) {
                         case ALERT_INTRUSION:   /* 入侵：急促三连音 */
                             Beep_PlayNote(NOTE_LA_HI, 100); delay_ms(80);
@@ -667,8 +878,15 @@ static void task_decision(void)
                             Beep_PlayNote(NOTE_SOL, 200);
                             break;
                     }
+#endif
                 }
 
+#if USE_FREERTOS
+                /* 抢占式调度：MQTT 上报与入侵抓拍全部投递到通信任务执行，
+                   保证 USART2/USART3 任何时刻只有一个任务在访问（见 TaskComm）。
+                   告警音/LED/事件日志等本地执行部分仍留在本任务。 */
+                PostCommEvent(EVT_ALERT, (uint8_t)effective);
+#else
 #if USE_ESP8266
     #if USE_MQTT
                 if (effective == ALERT_INTRUSION)
@@ -709,9 +927,10 @@ static void task_decision(void)
                     }
                 }
 #endif
+#endif /* !USE_FREERTOS */
 
                 g_last_alarm_tick = now;
-                g_manual_alert = ALERT_NONE;  /* 手动告警发完即清 */
+                g_manual_alert = ALERT_NONE;  /* 手动告警发完即清（comm/按键写、本任务清） */
             }
         } else {
             LED_OFF(1);
@@ -720,18 +939,32 @@ static void task_decision(void)
     }
 }
 
-/* 每 1s：RTC 秒刷新 + OLED 刷新（含 WiFi/MQTT 状态采样） */
+/* 每 1s：配置落盘 + RTC 秒刷新 + OLED 刷新（含 WiFi/MQTT 状态采样） */
 static void task_display(void)
 {
-    /* 延迟落盘：按键置脏 / AT 自愈置脏后在此统一擦写（见 HandleBoardKey 上方注释） */
+    /* 延迟落盘：按键置脏 / AT 自愈置脏后在此统一擦写（见 HandleBoardKey 上方注释）。
+       FreeRTOS 下落盘走 AT24C02（软件 I2C，与 MPU6050 共线），取总线互斥锁。 */
     if (s_config_dirty || AT_TakeConfigDirty()) {
         s_config_dirty = 0;
+#if USE_FREERTOS
+        xSemaphoreTake(s_i2c_mutex, portMAX_DELAY);
         Config_Save(AT_GetBaseline(), g_mode);
+        xSemaphoreGive(s_i2c_mutex);
+#else
+        Config_Save(AT_GetBaseline(), g_mode);
+#endif
     }
 
 #if USE_RTC
     SG_RTC_FormatTime(s_time_buf, sizeof(s_time_buf));
-    USART1_Printf("[RTC] %s\r\n", s_time_buf);
+    /* 显示节拍提速到 500ms 后，RTC 秒打印仍保持 1s 一行（隔次打印），
+       避免同一秒重复刷屏日志 */
+    {
+        static uint8_t s_rtc_div = 0;
+        s_rtc_div = (uint8_t)(s_rtc_div + 1u);
+        if (s_rtc_div & 0x01u)
+            USART1_Printf("[RTC] %s\r\n", s_time_buf);
+    }
 #endif
 
 #if USE_OLED
@@ -741,12 +974,19 @@ static void task_display(void)
     s_mqtt_status = ESP8266_IsMQTTOk() ? "M+" : "M-";
     #endif
 #endif
+    /* OLED 软件 SPI 另一处使用点是 fast 任务的按键即时重绘，必须互斥 */
+#if USE_FREERTOS
+    xSemaphoreTake(s_oled_mutex, portMAX_DELAY);
+#endif
     if (g_alert != ALERT_NONE) {
         OLED_ShowAlertPage(&g_sensor, g_alert, s_time_buf, s_cam_ok);
     } else {
         OLED_ShowHomeScreen(&g_sensor, g_mode, s_time_buf,
                             s_wifi_status, s_mqtt_status);
     }
+#if USE_FREERTOS
+    xSemaphoreGive(s_oled_mutex);
+#endif
 #endif
 }
 
@@ -823,7 +1063,9 @@ static void task_health(void)
 #endif
 
 #if ML_DATA_COLLECT
-/* 每 2s：ML 数据采集 CSV 行（串口 + UDP） */
+/* 每 2s：ML 数据采集 CSV 行（串口 + UDP）。
+   FreeRTOS 下不单独建任务，由 TaskComm 在 2s 节拍调用（ESP8266_SendUDP
+   访问 USART3，必须与其他网络操作同在通信任务内串行）。 */
 static void task_ml_collect(void)
 {
     uint32_t t = g_tick / 1000;
@@ -848,15 +1090,249 @@ static void task_ml_collect(void)
 }
 #endif
 
+#if USE_FREERTOS
+/* ==========================================================================
+ * FreeRTOS 任务层
+ *
+ * 旧的 task_* 周期函数原样保留为"单次执行体"，下面的 TaskXxx 壳函数只负责
+ * vTaskDelay 周期节拍，业务代码零改动。调度节拍对照：
+ *   TaskFast      50ms   按键 + IWDG（旧 0 周期每轮，50ms 远小于消抖/喂狗窗口）
+ *   TaskTamper    200ms  防拆 5Hz
+ *   TaskDecision  1000ms 采集 + 决策 + 本地告警（DHT11 内部 2s 软分频）
+ *   TaskDisplay   500ms  RTC + OLED + 配置落盘（RTC 打印内部 1s 分频）
+ *   TaskComm      内部节拍：MQTT 收包 50ms / 遥测 10s / 心跳 30s / 健康 5min
+ * ========================================================================== */
+
+static void TaskFast(void *arg)
+{
+    (void)arg;
+    for (;;)
+    {
+        task_fast();
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+static void TaskTamper(void *arg)
+{
+    (void)arg;
+    for (;;)
+    {
+        vTaskDelay(pdMS_TO_TICKS(200));
+        task_tamper();
+    }
+}
+
+static void TaskDecision(void *arg)
+{
+    (void)arg;
+    for (;;)
+    {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        task_decision();
+    }
+}
+
+static void TaskDisplay(void *arg)
+{
+    (void)arg;
+    for (;;)
+    {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        task_display();
+    }
+}
+
+#if USE_ESP8266
+/* 告警事件的网络侧处理：MQTT 告警上报 + 入侵抓拍（代码语义与裸机版一致，
+   只是执行位置从 decision 任务移到本任务，串行化 USART2/USART3 访问） */
+static void CommHandleAlert(uint8_t alert)
+{
+    Alert_Type_t effective = (Alert_Type_t)alert;
+
+#if USE_MQTT
+    if (effective == ALERT_INTRUSION)
+        ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Intrusion!", 0);
+    else if (effective == ALERT_FIRE)
+        ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Fire!", 0);
+    else if (effective == ALERT_TAMPER)
+        ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:Tamper!", 0);
+    else
+        ESP8266_MQTTPublish(MQTT_TOPIC_SENSOR, "ALERT:EnvAbnormal!", 0);
+#else
+    if (effective == ALERT_INTRUSION)
+        ESP8266_SendAlert("Intrusion!");
+    else if (effective == ALERT_FIRE)
+        ESP8266_SendAlert("Fire!");
+    else if (effective == ALERT_TAMPER)
+        ESP8266_SendAlert("Tamper!");
+    else
+        ESP8266_SendAlert("EnvAbnormal!");
+#endif
+
+#if USE_ESP32_CAM
+    if (effective == ALERT_INTRUSION)
+    {
+        char cam_url[96];
+        ESP32CAM_Status_t cam_st = ESP32CAM_TriggerCapture(cam_url, sizeof(cam_url));
+#if USE_OLED
+        s_cam_ok = (cam_st == CAM_OK) ? 1 : 0;
+#endif
+        if (cam_st == CAM_OK) {
+            USART1_Printf("[ESP32-CAM] photo: %s\r\n", cam_url);
+            ESP8266_MQTTPublish(MQTT_TOPIC_CAM_SHOT, cam_url, 1);
+        } else if (cam_st == CAM_OFFLINE) {
+            USART1_SendString("[ESP32-CAM] offline\r\n");
+        } else {
+            USART1_Printf("[ESP32-CAM] failed (%d)\r\n", cam_st);
+        }
+    }
+#endif
+}
+
+/* 通信任务：全工程唯一访问 ESP8266/ESP32-CAM 串口的任务。
+   - 50ms 节拍处理 MQTT 下行帧 + 合并上报补报（CmdReportFlush）
+   - 事件队列：按键模式补报、告警上报/抓拍
+   - 内部维护遥测/心跳/健康检查/ML 采集的软周期（原协作式调度同一套时序）
+   阻塞点（AT 长等待、CAPTURE 最坏 ~4s）只冻结本任务；看门狗由 TaskFast 喂，
+   防拆由 TaskTamper + TamperWaitHook 续采，与裸机版行为一致。 */
+static void TaskComm(void *arg)
+{
+    TickType_t last_tele;
+    TickType_t last_ping;
+    TickType_t last_health;
+#if ML_DATA_COLLECT
+    TickType_t last_ml;
+#endif
+    TickType_t now;
+    comm_evt_t evt;
+
+    (void)arg;
+    last_tele = last_ping = last_health = xTaskGetTickCount();
+#if ML_DATA_COLLECT
+    last_ml = last_tele;
+#endif
+
+    for (;;)
+    {
+#if USE_MQTT
+        ESP8266_MQTTProcessRx();
+        CmdReportFlush();   /* 被合并的灯/模式上报在此补报（500ms 窗口过后） */
+#endif
+
+        /* 事件队列一次性抽空（长度 8，正常不会积压） */
+        while (xQueueReceive(s_comm_queue, &evt, 0) == pdPASS)
+        {
+            if (evt.type == (uint8_t)EVT_KEY_MODE)
+            {
+                MQTT_ReportModeStatus();   /* g_mode 已由按键任务更新，retain 补报 */
+            }
+            else if (evt.type == (uint8_t)EVT_ALERT)
+            {
+                CommHandleAlert(evt.value);
+            }
+            else
+            {
+                /* 未知事件丢弃 */
+            }
+        }
+
+        now = xTaskGetTickCount();
+#if USE_MQTT
+        if ((TickType_t)(now - last_tele) >= pdMS_TO_TICKS(10000))
+        {
+            last_tele = now;
+            task_telemetry();
+        }
+        if ((TickType_t)(now - last_ping) >= pdMS_TO_TICKS(MQTT_KEEPALIVE_SEC * 1000 / 2))
+        {
+            last_ping = now;
+            task_ping();
+        }
+#endif
+        if ((TickType_t)(now - last_health) >= pdMS_TO_TICKS(300000))
+        {
+            last_health = now;
+            task_health();
+        }
+#if ML_DATA_COLLECT
+        if ((TickType_t)(now - last_ml) >= pdMS_TO_TICKS(2000))
+        {
+            last_ml = now;
+            task_ml_collect();
+        }
+#endif
+
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+#endif /* USE_ESP8266 */
+
+/* ============ FreeRTOS 钩子函数（FreeRTOSConfig.h 中使能） ============ */
+
+/* 空闲钩子：没有任务就绪时 WFI 休眠，任意中断（USART RX/SysTick）唤醒，
+   保留旧协作式调度器 __WFI 的低功耗行为。 */
+void vApplicationIdleHook(void)
+{
+    __WFI();
+}
+
+/* 栈溢出（方法 2）/堆分配失败：打故障标记并停机。
+   注意这两个钩子可能在 PendSV 上下文中被调用，不能取互斥锁/走阻塞串口，
+   只写全局标记，J-Link 暂停后看 s_rtos_fault 即可定位。 */
+static volatile uint32_t s_rtos_fault = 0;
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    (void)xTask;
+    (void)pcTaskName;
+    s_rtos_fault = 1U;
+    taskDISABLE_INTERRUPTS();
+    for (;;)
+    {
+    }
+}
+
+void vApplicationMallocFailedHook(void)
+{
+    s_rtos_fault = 2U;
+    taskDISABLE_INTERRUPTS();
+    for (;;)
+    {
+    }
+}
+#endif /* USE_FREERTOS */
+
 /* ============ 主函数 ============ */
 int main(void)
 {
+#if USE_FREERTOS
+    /* FreeRTOS 官方要求：所有优先级位都用作抢占优先级（STM32 4 位 → group 4）。
+       USART1/2/3 的 ISR 抢占优先级保持 1（高于 configMAX_SYSCALL=5，不调用
+       任何 FromISR API，仅填环形缓冲），满足该约束。 */
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);
+#else
     NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
+#endif
     Delay_Init();
     USART1_Init(115200);
+#if USE_FREERTOS
+    /* heap_4 在调度器启动前即可用，先建同步对象，后续初始化打印自动绕过锁 */
+    USART1_LockInit();
+    s_comm_queue = xQueueCreate(8, sizeof(comm_evt_t));
+    s_i2c_mutex  = xSemaphoreCreateMutex();
+    s_oled_mutex = xSemaphoreCreateMutex();
+    if ((s_comm_queue == (QueueHandle_t)0) ||
+        (s_i2c_mutex == (SemaphoreHandle_t)0) ||
+        (s_oled_mutex == (SemaphoreHandle_t)0))
+    {
+        USART1_SendString("[RTOS] kernel object create FAIL\r\n");
+        for (;;) { }
+    }
+#endif
 
     USART1_SendString("\r\n====================================\r\n");
-    USART1_SendString("  SmartGuard v0.7.2 - Space Guard Agent\r\n");
+    USART1_SendString("  SmartGuard v0.7.2 - Space Guard Agent (FreeRTOS)\r\n");
     USART1_SendString("====================================\r\n");
 
     Hardware_InitAll();
@@ -939,7 +1415,38 @@ int main(void)
     ESP8266_SetWaitHook(TamperWaitHook);
 #endif
 
-    /* ========== 调度器启动（注册表批量注册，风格对齐课程模板 task_list；
+#if USE_FREERTOS
+    /* ========== FreeRTOS 任务创建并启动调度器（永不返回） ==========
+       优先级：fast(4) > tamper(3) > decision/comm(2) > display(1)。
+       高优先级任务全部阻塞在 vTaskDelay 上时，display 才执行 OLED 慢刷新；
+       comm 的 AT 长阻塞不再冻结按键/喂狗/防拆（对比旧协作式调度的关键改进）。 */
+    #define SG_CREATE_TASK(func, name, stack, prio)                              \
+        do {                                                                     \
+            TaskHandle_t _h = (TaskHandle_t)0;                                   \
+            if (xTaskCreate((func), (name), (stack), (void *)0,                 \
+                            (prio), &_h) != pdPASS)                              \
+            {                                                                    \
+                USART1_Printf("[RTOS] create task %s FAIL\r\n", (name));        \
+            }                                                                    \
+        } while (0)
+
+    SG_CREATE_TASK(TaskFast,     "fast",     STACK_FAST,     PRIO_FAST);
+    SG_CREATE_TASK(TaskTamper,   "tamper",   STACK_TAMPER,   PRIO_TAMPER);
+    SG_CREATE_TASK(TaskDecision, "decision", STACK_DECISION, PRIO_DECISION);
+    SG_CREATE_TASK(TaskDisplay,  "display",  STACK_DISPLAY,  PRIO_DISPLAY);
+#if USE_ESP8266
+    SG_CREATE_TASK(TaskComm,     "comm",     STACK_COMM,     PRIO_COMM);
+#endif
+
+    USART1_SendString("[RTOS] scheduler starting (FreeRTOS V10.5.1)\r\n\r\n");
+    vTaskStartScheduler();   /* 永不返回：port 重配 SysTick，首任务由 SVC 拉起 */
+
+    /* 正常不会走到：只有堆不足导致 idle 任务创建失败才返回 */
+    for (;;)
+    {
+    }
+#else
+    /* ========== 协作式调度器启动（注册表批量注册，风格对齐课程模板 task_list；
        任务实现见上方 task_* 函数。注册顺序有意义：tamper 须在 decision 之前，
        同一轮到期时先刷新 tamper 标志再交给决策引擎） ========== */
     {
@@ -970,14 +1477,5 @@ int main(void)
         }
         scheduler_run();   /* 永不返回：空闲 __WFI 休眠，SysTick 1ms 唤醒，周期零漂移 */
     }
-
-
-
-
-
-
-
-
-
-
+#endif
 }

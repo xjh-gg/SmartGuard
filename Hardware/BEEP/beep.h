@@ -26,6 +26,12 @@
 #include "stm32f4xx.h"
 #include "delay.h"     /* Beep_PlayNote 内部使用 delay_ms() */
 
+/* ========== 蜂鸣器总开关（比赛演示静音） ==========
+   0 = 驱动层硬隔离：Beep_Init 不配置 PF8/TIM13，Beep_On/PlayNote 直接返回，
+       任何模块误调用都不会发声，也不再有告警音的阻塞延时；
+   1 = 恢复正常蜂鸣器功能。 */
+#define BEEP_ENABLE     1
+
 /* ========== 蜂鸣器硬件配置 ========== */
 #define BEEP_PORT       GPIOF
 #define BEEP_PIN        GPIO_Pin_8

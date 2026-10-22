@@ -29,10 +29,20 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32f4xx_it.h"
-#include "delay.h"      /* SysTick_Update 更新 1ms 节拍 */
+#include "delay.h"      /* SysTick_Update 更新 1ms 节拍 g_tick */
 #include "usart.h"      /* USART1_RxHandler 接收中断处理 */
 #if USE_RTC
 #include "rtc.h"        /* RTC_IRQ_Callback 秒中断处理 */
+#endif
+
+#if USE_FREERTOS
+#include "FreeRTOS.h"
+#include "task.h"
+/* 三个内核异常处理函数定义在 portable/RVDS/ARM_CM4F/port.c，仅在该文件内声明。
+   SVC/PendSV 通过 FreeRTOSConfig.h 的名字映射直接占用启动文件向量；
+   SysTick 保留本文件自己的 Handler，在调度器运行后转发给内核节拍处理
+   （调度器启动前 xTaskIncrementTick 会解引用空 pxCurrentTCB，故必须判状态）。 */
+extern void xPortSysTickHandler(void);
 #endif
 
 /** @addtogroup Template_Project
@@ -115,10 +125,14 @@ void UsageFault_Handler(void)
   * @brief  This function handles SVCall exception.
   * @param  None
   * @retval None
+  * @note   FreeRTOS 构建时本函数由 portable/RVDS/ARM_CM4F/port.c 的
+  *         vPortSVCHandler 经 FreeRTOSConfig.h 名字映射提供，不可重复定义。
   */
+#if !USE_FREERTOS
 void SVC_Handler(void)
 {
 }
+#endif
 
 /**
   * @brief  This function handles Debug Monitor exception.
@@ -133,20 +147,32 @@ void DebugMon_Handler(void)
   * @brief  This function handles PendSVC exception.
   * @param  None
   * @retval None
+  * @note   FreeRTOS 构建时由 port.c 的 xPortPendSVHandler 提供（任务上下文切换）。
   */
+#if !USE_FREERTOS
 void PendSV_Handler(void)
 {
 }
+#endif
 
 /**
   * @brief  This function handles SysTick Handler.
   * @param  None
   * @retval None
-  * @note   每 1ms 进入一次：更新 g_tick 节拍 + 递减阻塞延时计数（delay.c）
+  * @note   每 1ms 进入一次。裸机：更新 g_tick 节拍 + 递减阻塞延时计数（delay.c）。
+  *         FreeRTOS：更新 g_tick 后，在调度器已运行时转发给 xPortSysTickHandler，
+  *         由 FreeRTOS 完成 tick 计数、任务唤醒与 PendSV 调度；调度器启动前
+  *         （上电初始化阶段）只维护 g_tick，不调用内核，避免解引用空 TCB。
   */
 void SysTick_Handler(void)
 {
     SysTick_Update();
+#if USE_FREERTOS
+    if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)
+    {
+        xPortSysTickHandler();
+    }
+#endif
 }
 
 /******************************************************************************/

@@ -16,6 +16,7 @@
   */
 void Beep_Init(void)
 {
+#if BEEP_ENABLE
     GPIO_InitTypeDef        GPIO_InitStruct;
     TIM_TimeBaseInitTypeDef TIM_TimeBaseStruct;
     TIM_OCInitTypeDef       TIM_OCInitStruct;
@@ -57,6 +58,10 @@ void Beep_Init(void)
 
     /* 启动 TIM13 计数器（PWM 输出与否取决于 CC1 通道开关） */
     TIM_Cmd(BEEP_TIM, ENABLE);
+#else
+    /* BEEP_ENABLE=0：PF8 保持复位默认输入态、TIM13 时钟不开，
+       蜂鸣器物理上无 PWM 驱动，全工程任何调用都不会发声 */
+#endif
 }
 
 /**
@@ -65,7 +70,9 @@ void Beep_Init(void)
   */
 void Beep_On(void)
 {
+#if BEEP_ENABLE
     TIM_CCxCmd(BEEP_TIM, TIM_Channel_1, ENABLE);
+#endif
 }
 
 /**
@@ -73,7 +80,9 @@ void Beep_On(void)
   */
 void Beep_Off(void)
 {
+#if BEEP_ENABLE
     TIM_CCxCmd(BEEP_TIM, TIM_Channel_1, DISABLE);
+#endif
 }
 
 /**
@@ -88,6 +97,7 @@ void Beep_Off(void)
   */
 void Beep_SetFreq(uint16_t freq)
 {
+#if BEEP_ENABLE
     uint32_t arr;
 
     if (freq == 0) return;
@@ -100,6 +110,9 @@ void Beep_SetFreq(uint16_t freq)
     TIM_GenerateEvent(BEEP_TIM, TIM_EventSource_Update);
     /* 保持 50% 占空比 */
     TIM_SetCompare1(BEEP_TIM, arr / 2);
+#else
+    (void)freq;
+#endif
 }
 
 /**
@@ -112,8 +125,14 @@ void Beep_SetFreq(uint16_t freq)
   */
 void Beep_PlayNote(uint16_t freq, uint16_t duration_ms)
 {
+#if BEEP_ENABLE
     Beep_SetFreq(freq);
     Beep_On();
     delay_ms(duration_ms);
     Beep_Off();
+#else
+    /* 静音模式：不发声，也不产生阻塞延时（避免占用决策任务节拍） */
+    (void)freq;
+    (void)duration_ms;
+#endif
 }

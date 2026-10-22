@@ -142,6 +142,43 @@ ESP32CAM_Status_t ESP32CAM_TriggerCapture(char *url_buf, uint16_t buf_len)
 }
 
 /**
+  * @brief  控制 ESP32-CAM 补光灯（板载 Flash LED，GPIO4）
+  * @param  on: 1=开灯 0=关灯
+  * @retval ESP32CAM_Status_t（CAM_OK 表示 CAM 已确认执行）
+  */
+ESP32CAM_Status_t ESP32CAM_SetLed(uint8_t on)
+{
+    if (!cam_online)
+    {
+        /* 离线时先快速重探测一次（同 TriggerCapture 策略） */
+        char rx[32];
+        USART2_SendString("STATUS\r\n");
+        if (ReadLine(rx, sizeof(rx), 1000) && strstr(rx, "READY") != NULL)
+        {
+            cam_online = 1;
+        }
+        else
+        {
+            return CAM_OFFLINE;
+        }
+    }
+
+    USART2_FlushRx();
+    USART2_SendString(on ? "LEDON\r\n" : "LEDOFF\r\n");
+
+    /* 等应答（补光灯控制很轻，800ms 足够；超时按掉线处理） */
+    char rx_buf[32];
+    if (!ReadLine(rx_buf, sizeof(rx_buf), 800))
+    {
+        cam_online = 0;
+        return CAM_TIMEOUT;
+    }
+
+    if (strncmp(rx_buf, "OK", 2) == 0) return CAM_OK;
+    return CAM_BUSY;
+}
+
+/**
   * @brief  检查 ESP32-CAM 在线状态
   */
 uint8_t ESP32CAM_IsOnline(void)

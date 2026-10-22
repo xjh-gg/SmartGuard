@@ -1,26 +1,63 @@
 /**
   ******************************************************************************
   * @file    usart.c
-  * @brief   ´®¿ÚÇı¶¯ÊµÏÖ£¨USART1£©
+  * @brief   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Êµï¿½Ö£ï¿½USART1ï¿½ï¿½
   *
-  * ¹¦ÄÜ£º
-  *   1. USART1 ³õÊ¼»¯£ºPA9(TX) + PA10(RX)£¬AF7 ¸´ÓÃ£¬¿ÉÉè²¨ÌØÂÊ
-  *   2. ·¢ËÍ£ºSendByte / SendString / Printf£¨vsprintf ¸ñÊ½»¯£©
-  *   3. ½ÓÊÕ£ºÖĞ¶Ï·½Ê½£¨RXNE£©£¬»·ĞÎ»º³åÇø»º´æ£¬GetByte ·Ç×èÈû¶ÁÈ¡
+  * ï¿½ï¿½ï¿½Ü£ï¿½
+  *   1. USART1 ï¿½ï¿½Ê¼ï¿½ï¿½ï¿½ï¿½PA9(TX) + PA10(RX)ï¿½ï¿½AF7 ï¿½ï¿½ï¿½Ã£ï¿½ï¿½ï¿½ï¿½è²¨ï¿½ï¿½ï¿½ï¿½
+  *   2. ï¿½ï¿½ï¿½Í£ï¿½SendByte / SendString / Printfï¿½ï¿½vsprintf ï¿½ï¿½Ê½ï¿½ï¿½ï¿½ï¿½
+  *   3. ï¿½ï¿½ï¿½Õ£ï¿½ï¿½Ğ¶Ï·ï¿½Ê½ï¿½ï¿½RXNEï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½æ£¬GetByte ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È¡
   *
-  * ·¢ËÍ²ßÂÔ£º
-  *   ÂÖÑ¯ TXE ±êÖ¾£¨·¢ËÍÊı¾İ¼Ä´æÆ÷¿Õ£©+ TC ±êÖ¾£¨·¢ËÍÍê³É£©£¬
-  *   ¼òµ¥¿É¿¿£¬ÊÊºÏ½ÌÑ§Ê¾Àı¡£Êµ¼Ê¹¤³Ì´óÊı¾İÁ¿¿É¸Ä DMA¡£
+  * ï¿½ï¿½ï¿½Í²ï¿½ï¿½Ô£ï¿½
+  *   ï¿½ï¿½Ñ¯ TXE ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½İ¼Ä´ï¿½ï¿½ï¿½ï¿½Õ£ï¿½+ TC ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É£ï¿½ï¿½ï¿½
+  *   ï¿½òµ¥¿É¿ï¿½ï¿½ï¿½ï¿½ÊºÏ½ï¿½Ñ§Ê¾ï¿½ï¿½ï¿½ï¿½Êµï¿½Ê¹ï¿½ï¿½Ì´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É¸ï¿½ DMAï¿½ï¿½
   *
-  * ½ÓÊÕ²ßÂÔ£º
-  *   RXNE ÖĞ¶Ï°Ñ×Ö½ÚĞ´Èë»·ĞÎ»º³åÇø£¬Ö÷Ñ­»·ÓÃ GetByte È¡³ö¡£
-  *   »º³åÇøÂúÊ±¶ªÆúĞÂÊı¾İ£¨½ÌÑ§¼ò»¯£¬Êµ¼Ê¿É×öÁ÷¿Ø£©¡£
+  * ï¿½ï¿½ï¿½Õ²ï¿½ï¿½Ô£ï¿½
+  *   RXNE ï¿½Ğ¶Ï°ï¿½ï¿½Ö½ï¿½Ğ´ï¿½ë»·ï¿½Î»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ñ­ï¿½ï¿½ï¿½ï¿½ GetByte È¡ï¿½ï¿½ï¿½ï¿½
+  *   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½İ£ï¿½ï¿½ï¿½Ñ§ï¿½ò»¯£ï¿½Êµï¿½Ê¿ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ø£ï¿½ï¿½ï¿½
   ******************************************************************************
   */
 #include "usart.h"
 
-/* ·¢ËÍµÈ´ıÉÏÏŞ£ºÍâÉè/Ê±ÖÓÒì³£Ê±·ÀÖ¹Ö÷Ñ­»·ÓÀ¾Ã¿¨ËÀ£¨P3-#3£©¡£
-   115200bps µ¥×Ö½Ú ~87us£¬100000 ´Îµü´úÔ¶³¬ ms ¼¶£¬Õı³£Â·¾¶ÁãÓ°Ïì */
+#if USE_FREERTOS
+/* FreeRTOS: USART1 is shared by every task. printf_buf1 is a static buffer, so
+   concurrent USART1_Printf/SendString calls from different tasks would corrupt
+   the formatted text. A plain mutex (priority inheritance via heap_4) serializes
+   log lines; before scheduler starts the lock helpers are pass-through. */
+#include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
+static SemaphoreHandle_t s_log1_mutex = (SemaphoreHandle_t)0;
+
+void USART1_LockInit(void)
+{
+    if (s_log1_mutex == (SemaphoreHandle_t)0)
+    {
+        s_log1_mutex = xSemaphoreCreateMutex();
+    }
+}
+
+static void log1_lock(void)
+{
+    if ((xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) &&
+        (s_log1_mutex != (SemaphoreHandle_t)0))
+    {
+        (void)xSemaphoreTake(s_log1_mutex, portMAX_DELAY);
+    }
+}
+
+static void log1_unlock(void)
+{
+    if ((xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) &&
+        (s_log1_mutex != (SemaphoreHandle_t)0))
+    {
+        (void)xSemaphoreGive(s_log1_mutex);
+    }
+}
+#endif /* USE_FREERTOS */
+
+/* ï¿½ï¿½ï¿½ÍµÈ´ï¿½ï¿½ï¿½ï¿½Ş£ï¿½ï¿½ï¿½ï¿½ï¿½/Ê±ï¿½ï¿½ï¿½ì³£Ê±ï¿½ï¿½Ö¹ï¿½ï¿½Ñ­ï¿½ï¿½ï¿½ï¿½ï¿½Ã¿ï¿½ï¿½ï¿½ï¿½ï¿½P3-#3ï¿½ï¿½ï¿½ï¿½
+   115200bps ï¿½ï¿½ï¿½Ö½ï¿½ ~87usï¿½ï¿½100000 ï¿½Îµï¿½ï¿½ï¿½Ô¶ï¿½ï¿½ ms ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Â·ï¿½ï¿½ï¿½ï¿½Ó°ï¿½ï¿½ */
 #define USART_WAIT_MAX  100000U
 #define USART_WAIT_FLAG(uart, flag)                               \
     do {                                                          \
@@ -31,27 +68,27 @@
         }                                                         \
     } while (0)
 
-/* ========== USART1 »·ĞÎ»º³åÇø ========== */
+/* ========== USART1 ï¿½ï¿½ï¿½Î»ï¿½ï¿½ï¿½ï¿½ï¿½ ========== */
 static volatile uint8_t  usart1_rx_buf[RX_BUF_SIZE];
 static volatile uint16_t usart1_rx_head = 0;
 static volatile uint16_t usart1_rx_tail = 0;
 
-/* ========== USART2 »·ĞÎ»º³åÇø ========== */
+/* ========== USART2 ï¿½ï¿½ï¿½Î»ï¿½ï¿½ï¿½ï¿½ï¿½ ========== */
 static volatile uint8_t  usart2_rx_buf[RX_BUF_SIZE];
 static volatile uint16_t usart2_rx_head = 0;
 static volatile uint16_t usart2_rx_tail = 0;
 
-/* Printf ÁÙÊ±»º³åÇø£¨Ã¿¸ö´®¿Ú¶ÀÁ¢£¬±ÜÃâ²¢·¢µ÷ÓÃÊ±Êı¾İ½»²æ£© */
+/* Printf ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ã¿ï¿½ï¿½ï¿½ï¿½ï¿½Ú¶ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½â²¢ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½İ½ï¿½ï¿½æ£©ï¿½ï¿½
+   USART3 Ö»ï¿½ï¿½ AT Ö¸ï¿½ï¿½ï¿½Õ·ï¿½ï¿½ï¿½Ã»ï¿½ï¿½ Printfï¿½ï¿½ï¿½ï¿½Ö»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
 static char printf_buf1[128];
 static char printf_buf2[128];
-// static char printf_buf3[128];  /* ÒÑÉ¾³ı£ºUSART3 Î´Ê¹ÓÃ */
 
 /**
-  * @brief  ³õÊ¼»¯ USART1
-  * @param  baud: ²¨ÌØÂÊ£¬Èç 115200
-  *   - ¿ª GPIOA + USART1 Ê±ÖÓ
-  *   - PA9 ¸´ÓÃ AF7 ×ö TX£¨ÍÆÍì£©£¬PA10 ¸´ÓÃ AF7 ×ö RX£¨¸¡¿Õ£©
-  *   - 8N1 ÎŞÓ²¼şÁ÷¿Ø£¬Ê¹ÄÜ RXNE ÖĞ¶Ï + NVIC
+  * @brief  ï¿½ï¿½Ê¼ï¿½ï¿½ USART1
+  * @param  baud: ï¿½ï¿½ï¿½ï¿½ï¿½Ê£ï¿½ï¿½ï¿½ 115200
+  *   - ï¿½ï¿½ GPIOA + USART1 Ê±ï¿½ï¿½
+  *   - PA9 ï¿½ï¿½ï¿½ï¿½ AF7 ï¿½ï¿½ TXï¿½ï¿½ï¿½ï¿½ï¿½ì£©ï¿½ï¿½PA10 ï¿½ï¿½ï¿½ï¿½ AF7 ï¿½ï¿½ RXï¿½ï¿½ï¿½ï¿½ï¿½Õ£ï¿½
+  *   - 8N1 ï¿½ï¿½Ó²ï¿½ï¿½ï¿½ï¿½ï¿½Ø£ï¿½Ê¹ï¿½ï¿½ RXNE ï¿½Ğ¶ï¿½ + NVIC
   */
 void USART1_Init(uint32_t baud)
 {
@@ -59,14 +96,14 @@ void USART1_Init(uint32_t baud)
     USART_InitTypeDef   USART_InitStruct;
     NVIC_InitTypeDef    NVIC_InitStruct;
 
-    /* ---- ¿ªÊ±ÖÓ£ºUSART1 ÔÚ APB2£¬GPIOA ÔÚ AHB1 ---- */
+    /* ---- ï¿½ï¿½Ê±ï¿½Ó£ï¿½USART1 ï¿½ï¿½ APB2ï¿½ï¿½GPIOA ï¿½ï¿½ AHB1 ---- */
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1, ENABLE);
 
-    /* ---- PA9(TX) + PA10(RX) ¸´ÓÃ USART1 ---- */
+    /* ---- PA9(TX) + PA10(RX) ï¿½ï¿½ï¿½ï¿½ USART1 ---- */
     GPIO_InitStruct.GPIO_Mode  = GPIO_Mode_AF;
-    GPIO_InitStruct.GPIO_OType = GPIO_OType_PP;     /* TX ÍÆÍì */
-    GPIO_InitStruct.GPIO_PuPd  = GPIO_PuPd_UP;      /* RX ÉÏÀ­£¨¿ÕÏĞ¸ßµçÆ½£© */
+    GPIO_InitStruct.GPIO_OType = GPIO_OType_PP;     /* TX ï¿½ï¿½ï¿½ï¿½ */
+    GPIO_InitStruct.GPIO_PuPd  = GPIO_PuPd_UP;      /* RX ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ğ¸ßµï¿½Æ½ï¿½ï¿½ */
     GPIO_InitStruct.GPIO_Speed = GPIO_Speed_100MHz;
     GPIO_InitStruct.GPIO_Pin   = USART1_TX_PIN | USART1_RX_PIN;
     GPIO_Init(GPIOA, &GPIO_InitStruct);
@@ -74,7 +111,7 @@ void USART1_Init(uint32_t baud)
     GPIO_PinAFConfig(USART1_TX_PORT, USART1_TX_SRC, USART1_AF);
     GPIO_PinAFConfig(USART1_RX_PORT, USART1_RX_SRC, USART1_AF);
 
-    /* ---- USART1 ²ÎÊı£º²¨ÌØÂÊ/8Î»/1Í£Ö¹Î»/ÎŞĞ£Ñé/ÊÕ·¢Ê¹ÄÜ ---- */
+    /* ---- USART1 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½/8Î»/1Í£Ö¹Î»/ï¿½ï¿½Ğ£ï¿½ï¿½/ï¿½Õ·ï¿½Ê¹ï¿½ï¿½ ---- */
     USART_InitStruct.USART_BaudRate            = baud;
     USART_InitStruct.USART_WordLength          = USART_WordLength_8b;
     USART_InitStruct.USART_StopBits            = USART_StopBits_1;
@@ -83,22 +120,22 @@ void USART1_Init(uint32_t baud)
     USART_InitStruct.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
     USART_Init(USART1, &USART_InitStruct);
 
-    /* ---- ¿ª RXNE ÖĞ¶Ï£ºÊÕµ½Êı¾İ¾Í´¥·¢ ---- */
+    /* ---- ï¿½ï¿½ RXNE ï¿½Ğ¶Ï£ï¿½ï¿½Õµï¿½ï¿½ï¿½ï¿½İ¾Í´ï¿½ï¿½ï¿½ ---- */
     USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
-    USART_ClearFlag(USART1, USART_FLAG_TC);          /* Çå³ı·¢ËÍÍê³É±êÖ¾ */
+    USART_ClearFlag(USART1, USART_FLAG_TC);          /* ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É±ï¿½Ö¾ */
     USART_Cmd(USART1, ENABLE);
 
-    /* ---- NVIC£ºUSART1 È«¾ÖÖĞ¶Ï£¨ÔÚÆô¶¯ÎÄ¼şÀïÊÇ USART1_IRQn£© ---- */
+    /* ---- NVICï¿½ï¿½USART1 È«ï¿½ï¿½ï¿½Ğ¶Ï£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä¼ï¿½ï¿½ï¿½ï¿½ï¿½ USART1_IRQnï¿½ï¿½ ---- */
     NVIC_InitStruct.NVIC_IRQChannel                   = USART1_IRQn;
-    NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 1;   /* ÇÀÕ¼ÓÅÏÈ¼¶ 1 */
-    NVIC_InitStruct.NVIC_IRQChannelSubPriority        = 1;   /* ×ÓÓÅÏÈ¼¶ 1 */
+    NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 1;   /* ï¿½ï¿½Õ¼ï¿½ï¿½ï¿½È¼ï¿½ 1 */
+    NVIC_InitStruct.NVIC_IRQChannelSubPriority        = 1;   /* ï¿½ï¿½ï¿½ï¿½ï¿½È¼ï¿½ 1 */
     NVIC_InitStruct.NVIC_IRQChannelCmd                = ENABLE;
     NVIC_Init(&NVIC_InitStruct);
 }
 
 /**
-  * @brief  ·¢ËÍÒ»¸ö×Ö½Ú£¨×èÈûµÈ´ı TXE£©
-  * @param  data: Òª·¢ËÍµÄ×Ö½Ú
+  * @brief  ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ï¿½Ö½Ú£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È´ï¿½ TXEï¿½ï¿½
+  * @param  data: Òªï¿½ï¿½ï¿½Íµï¿½ï¿½Ö½ï¿½
   */
 void USART1_SendByte(uint8_t data)
 {
@@ -107,36 +144,52 @@ void USART1_SendByte(uint8_t data)
 }
 
 /**
-  * @brief  ·¢ËÍ×Ö·û´®
-  * @param  str: ÒÔ '\0' ½áÎ²µÄ×Ö·û´®
+  * @brief  ï¿½ï¿½ï¿½ï¿½ï¿½Ö·ï¿½ï¿½ï¿½
+  * @param  str: ï¿½ï¿½ '\0' ï¿½ï¿½Î²ï¿½ï¿½ï¿½Ö·ï¿½ï¿½ï¿½
   */
 void USART1_SendString(const char *str)
 {
+#if USE_FREERTOS
+    log1_lock();
+#endif
     while (*str != '\0')
     {
         USART1_SendByte((uint8_t)*str);
         str++;
     }
-    /* µÈ×îºóÒ»¸ö×Ö½ÚÕæÕı·¢Íê£¨TC=·¢ËÍÍê³É£© */
+    /* ç­‰æœ€åä¸€ä¸ªå­—èŠ‚å‘å®Œï¼ˆTC=å‘é€å®Œæˆï¼‰ */
     USART_WAIT_FLAG(USART1, USART_FLAG_TC);
+#if USE_FREERTOS
+    log1_unlock();
+#endif
 }
 
 /**
-  * @brief  ¸ñÊ½»¯·¢ËÍ£¨ÓÃ·¨Í¬ printf£©
-  * @param  fmt: ¸ñÊ½×Ö·û´®
-  *   ÄÚ²¿ÓÃ vsnprintf ¸ñÊ½»¯µ½ printf_buf ºóÖğ×Ö½Ú·¢ËÍ
-  *   ×¢Òâ£ºÔÚÇ¶ÈëÊ½»·¾³ vsnprintf ĞèÒª --use_micro_lib »òÍêÕû retarget
+  * @brief  ï¿½ï¿½Ê½ï¿½ï¿½ï¿½ï¿½ï¿½Í£ï¿½ï¿½Ã·ï¿½Í¬ printfï¿½ï¿½
+  * @param  fmt: ï¿½ï¿½Ê½ï¿½Ö·ï¿½ï¿½ï¿½
+  *   ï¿½Ú²ï¿½ï¿½ï¿½ vsnprintf ï¿½ï¿½Ê½ï¿½ï¿½ï¿½ï¿½ printf_buf ï¿½ï¿½ï¿½ï¿½ï¿½Ö½Ú·ï¿½ï¿½ï¿½
+  *   ×¢ï¿½â£ºï¿½ï¿½Ç¶ï¿½ï¿½Ê½ï¿½ï¿½ï¿½ï¿½ vsnprintf ï¿½ï¿½Òª --use_micro_lib ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ retarget
   */
 void USART1_Printf(const char *fmt, ...)
 {
     va_list ap;
     int len, i;
 
+#if USE_FREERTOS
+    log1_lock();   /* protect the static printf_buf1 + wire time from other tasks */
+#endif
+
     va_start(ap, fmt);
     len = vsnprintf(printf_buf1, sizeof(printf_buf1), fmt, ap);
     va_end(ap);
 
-    if (len < 0) return;
+    if (len < 0)
+    {
+#if USE_FREERTOS
+        log1_unlock();
+#endif
+        return;
+    }
     if (len >= (int)sizeof(printf_buf1)) len = sizeof(printf_buf1) - 1;
 
     for (i = 0; i < len; i++)
@@ -144,12 +197,15 @@ void USART1_Printf(const char *fmt, ...)
         USART1_SendByte((uint8_t)printf_buf1[i]);
     }
     USART_WAIT_FLAG(USART1, USART_FLAG_TC);
+#if USE_FREERTOS
+    log1_unlock();
+#endif
 }
 
 /**
-  * @brief  ·Ç×èÈû¶ÁÈ¡Ò»×Ö½Ú
-  * @param  data: Êä³ö¶ÁÈ¡µ½µÄ×Ö½Ú
-  * @retval 1 = ³É¹¦¶Áµ½Êı¾İ£¬0 = »º³åÇø¿Õ
+  * @brief  ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È¡Ò»ï¿½Ö½ï¿½
+  * @param  data: ï¿½ï¿½ï¿½ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½ï¿½Ö½ï¿½
+  * @retval 1 = ï¿½É¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½İ£ï¿½0 = ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
   */
 uint8_t USART1_GetByte(uint8_t *data)
 {
@@ -163,8 +219,8 @@ uint8_t USART1_GetByte(uint8_t *data)
 }
 
 /**
-  * @brief  »ñÈ¡½ÓÊÕ»º³åÇøÖĞÎ´¶Á×Ö½ÚÊı
-  * @retval µ±Ç°¿É¶Á×Ö½ÚÊı
+  * @brief  ï¿½ï¿½È¡ï¿½ï¿½ï¿½Õ»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î´ï¿½ï¿½ï¿½Ö½ï¿½ï¿½ï¿½
+  * @retval ï¿½ï¿½Ç°ï¿½É¶ï¿½ï¿½Ö½ï¿½ï¿½ï¿½
   */
 uint16_t USART1_GetRxCount(void)
 {
@@ -172,7 +228,7 @@ uint16_t USART1_GetRxCount(void)
 }
 
 /**
-  * @brief  Çå¿Õ½ÓÊÕ»º³åÇø
+  * @brief  ï¿½ï¿½Õ½ï¿½ï¿½Õ»ï¿½ï¿½ï¿½ï¿½ï¿½
   */
 void USART1_FlushRx(void)
 {
@@ -180,13 +236,13 @@ void USART1_FlushRx(void)
 }
 
 /* ========================================================================== */
-/* ÒÔÏÂº¯Êı¹© stm32f4xx_it.c µÄ USART1_IRQHandler µ÷ÓÃ                       */
+/* ï¿½ï¿½ï¿½Âºï¿½ï¿½ï¿½ï¿½ï¿½ stm32f4xx_it.c ï¿½ï¿½ USART1_IRQHandler ï¿½ï¿½ï¿½ï¿½                       */
 /* ========================================================================== */
 
 /**
-  * @brief  ´®¿Ú½ÓÊÕÖĞ¶Ï·şÎñº¯Êı£¨ÓÉ USART1_IRQHandler µ÷ÓÃ£©
-  *         ¶ÁÈ¡ USART1->DR£¬Ğ´Èë»·ĞÎ»º³åÇø
-  *         »º³åÇøÂúÊ±¶ªÆúĞÂ×Ö½Ú£¨¸²¸Ç×îĞÂµÄ£©
+  * @brief  ï¿½ï¿½ï¿½Ú½ï¿½ï¿½ï¿½ï¿½Ğ¶Ï·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ USART1_IRQHandler ï¿½ï¿½ï¿½Ã£ï¿½
+  *         ï¿½ï¿½È¡ USART1->DRï¿½ï¿½Ğ´ï¿½ë»·ï¿½Î»ï¿½ï¿½ï¿½ï¿½ï¿½
+  *         ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö½Ú£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ÂµÄ£ï¿½
   */
 void USART1_RxHandler(void)
 {
@@ -194,7 +250,7 @@ void USART1_RxHandler(void)
 
     if (USART_GetITStatus(USART1, USART_IT_RXNE) != RESET)
     {
-        ch = (uint8_t)USART_ReceiveData(USART1);    /* ¶Á DR ×Ô¶¯Çå RXNE */
+        ch = (uint8_t)USART_ReceiveData(USART1);    /* ï¿½ï¿½ DR ï¿½Ô¶ï¿½ï¿½ï¿½ RXNE */
 
         uint16_t next = (usart1_rx_head + 1) % RX_BUF_SIZE;
         if (next != usart1_rx_tail)
@@ -202,10 +258,10 @@ void USART1_RxHandler(void)
             usart1_rx_buf[usart1_rx_head] = ch;
             usart1_rx_head = next;
         }
-        /* next == usart1_rx_tail ±íÊ¾»º³åÇøÂú£¬¶ªÆúµ±Ç°×Ö½Ú */
+        /* next == usart1_rx_tail ï¿½ï¿½Ê¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ç°ï¿½Ö½ï¿½ */
     }
 
-    /* ´¦ÀíÒç³ö´íÎó£¨ORE£©£º¶Á SR ÔÙ¶Á DR Çå³ı */
+    /* ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½OREï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ SR ï¿½Ù¶ï¿½ DR ï¿½ï¿½ï¿½ */
     if (USART_GetFlagStatus(USART1, USART_FLAG_ORE) != RESET)
     {
         (void)USART1->SR;
@@ -214,16 +270,16 @@ void USART1_RxHandler(void)
 }
 
 /* ========================================================================== */
-/* USART2 Çı¶¯ÊµÏÖ                                                            */
-/*   Óë USART1 ÍêÈ«¶ÀÁ¢£¬Ê¹ÓÃ¶ÀÁ¢µÄ GPIO¡¢NVIC¡¢»·ĞÎ»º³åÇø                     */
+/* USART2 ï¿½ï¿½ï¿½ï¿½Êµï¿½ï¿½                                                            */
+/*   ï¿½ï¿½ USART1 ï¿½ï¿½È«ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê¹ï¿½Ã¶ï¿½ï¿½ï¿½ï¿½ï¿½ GPIOï¿½ï¿½NVICï¿½ï¿½ï¿½ï¿½ï¿½Î»ï¿½ï¿½ï¿½ï¿½ï¿½                     */
 /* ========================================================================== */
 
 /**
-  * @brief  ³õÊ¼»¯ USART2
-  * @param  baud: ²¨ÌØÂÊ£¬Èç 9600
-  *   - ¿ª GPIOA + USART2 Ê±ÖÓ
-  *   - PA2 ¸´ÓÃ AF7 ×ö TX£¨ÍÆÍì£©£¬PA3 ¸´ÓÃ AF7 ×ö RX£¨¸¡¿Õ£©
-  *   - 8N1 ÎŞÓ²¼şÁ÷¿Ø£¬Ê¹ÄÜ RXNE ÖĞ¶Ï + NVIC
+  * @brief  ï¿½ï¿½Ê¼ï¿½ï¿½ USART2
+  * @param  baud: ï¿½ï¿½ï¿½ï¿½ï¿½Ê£ï¿½ï¿½ï¿½ 9600
+  *   - ï¿½ï¿½ GPIOA + USART2 Ê±ï¿½ï¿½
+  *   - PA2 ï¿½ï¿½ï¿½ï¿½ AF7 ï¿½ï¿½ TXï¿½ï¿½ï¿½ï¿½ï¿½ì£©ï¿½ï¿½PA3 ï¿½ï¿½ï¿½ï¿½ AF7 ï¿½ï¿½ RXï¿½ï¿½ï¿½ï¿½ï¿½Õ£ï¿½
+  *   - 8N1 ï¿½ï¿½Ó²ï¿½ï¿½ï¿½ï¿½ï¿½Ø£ï¿½Ê¹ï¿½ï¿½ RXNE ï¿½Ğ¶ï¿½ + NVIC
   */
 void USART2_Init(uint32_t baud)
 {
@@ -231,11 +287,11 @@ void USART2_Init(uint32_t baud)
     USART_InitTypeDef   USART_InitStruct;
     NVIC_InitTypeDef    NVIC_InitStruct;
 
-    /* ---- ¿ªÊ±ÖÓ£ºUSART2 ÔÚ APB1£¬GPIOA ÔÚ AHB1 ---- */
+    /* ---- ï¿½ï¿½Ê±ï¿½Ó£ï¿½USART2 ï¿½ï¿½ APB1ï¿½ï¿½GPIOA ï¿½ï¿½ AHB1 ---- */
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_USART2, ENABLE);
 
-    /* ---- PA2(TX) + PA3(RX) ¸´ÓÃ USART2 ---- */
+    /* ---- PA2(TX) + PA3(RX) ï¿½ï¿½ï¿½ï¿½ USART2 ---- */
     GPIO_InitStruct.GPIO_Mode  = GPIO_Mode_AF;
     GPIO_InitStruct.GPIO_OType = GPIO_OType_PP;
     GPIO_InitStruct.GPIO_PuPd  = GPIO_PuPd_UP;
@@ -246,7 +302,7 @@ void USART2_Init(uint32_t baud)
     GPIO_PinAFConfig(USART2_TX_PORT, USART2_TX_SRC, USART2_AF);
     GPIO_PinAFConfig(USART2_RX_PORT, USART2_RX_SRC, USART2_AF);
 
-    /* ---- USART2 ²ÎÊı ---- */
+    /* ---- USART2 ï¿½ï¿½ï¿½ï¿½ ---- */
     USART_InitStruct.USART_BaudRate            = baud;
     USART_InitStruct.USART_WordLength          = USART_WordLength_8b;
     USART_InitStruct.USART_StopBits            = USART_StopBits_1;
@@ -255,12 +311,12 @@ void USART2_Init(uint32_t baud)
     USART_InitStruct.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
     USART_Init(USART2, &USART_InitStruct);
 
-    /* ---- ¿ª RXNE ÖĞ¶Ï ---- */
+    /* ---- ï¿½ï¿½ RXNE ï¿½Ğ¶ï¿½ ---- */
     USART_ITConfig(USART2, USART_IT_RXNE, ENABLE);
     USART_ClearFlag(USART2, USART_FLAG_TC);
     USART_Cmd(USART2, ENABLE);
 
-    /* ---- NVIC£ºUSART2 È«¾ÖÖĞ¶Ï ---- */
+    /* ---- NVICï¿½ï¿½USART2 È«ï¿½ï¿½ï¿½Ğ¶ï¿½ ---- */
     NVIC_InitStruct.NVIC_IRQChannel                   = USART2_IRQn;
     NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 1;
     NVIC_InitStruct.NVIC_IRQChannelSubPriority        = 2;
@@ -348,23 +404,23 @@ void USART2_RxHandler(void)
 }
 
 /* ========================================================================== */
-/* USART3 Çı¶¯ÊµÏÖ£¨½Ó ESP8266 WiFi Ä£¿é£©                                     */
+/* USART3 ï¿½ï¿½ï¿½ï¿½Êµï¿½Ö£ï¿½ï¿½ï¿½ ESP8266 WiFi Ä£ï¿½é£©                                     */
 /* ========================================================================== */
 
-/* ========== USART3 »·ĞÎ»º³åÇø ==========
-   µ¥¶À·Å´óµ½ 512B£º128B ÔÚ 115200bps ÏÂÖ»¹» ~11ms£¬OLED ÕûÆÁÖØ»æ(~50ms)»ò
-   MQTT ÖØÁ¬¶³½áÆÚ¼ä£¬ESP8266 µÄ +IPD ÏÂĞĞ»áÔÚ ISR Àï¾²Ä¬¶ªÆú£¨P3-#6£© */
+/* ========== USART3 ï¿½ï¿½ï¿½Î»ï¿½ï¿½ï¿½ï¿½ï¿½ ==========
+   ï¿½ï¿½ï¿½ï¿½ï¿½Å´ï¿½ 512Bï¿½ï¿½128B ï¿½ï¿½ 115200bps ï¿½ï¿½Ö»ï¿½ï¿½ ~11msï¿½ï¿½OLED ï¿½ï¿½ï¿½ï¿½ï¿½Ø»ï¿½(~50ms)ï¿½ï¿½
+   MQTT ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ú¼ä£¬ESP8266 ï¿½ï¿½ +IPD ï¿½ï¿½ï¿½Ğ»ï¿½ï¿½ï¿½ ISR ï¿½ï¾²Ä¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½P3-#6ï¿½ï¿½ */
 #define USART3_RX_BUF_SIZE  512
 static volatile uint8_t  usart3_rx_buf[USART3_RX_BUF_SIZE];
 static volatile uint16_t usart3_rx_head = 0;
 static volatile uint16_t usart3_rx_tail = 0;
 
 /**
-  * @brief  ³õÊ¼»¯ USART3
-  * @param  baud: ²¨ÌØÂÊ£¬Èç 115200
-  *   - ¿ª GPIOB + USART3 Ê±ÖÓ
-  *   - PB10 ¸´ÓÃ AF7 ×ö TX£¨ÍÆÍì£©£¬PB11 ¸´ÓÃ AF7 ×ö RX£¨¸¡¿Õ£©
-  *   - 8N1 ÎŞÓ²¼şÁ÷¿Ø£¬Ê¹ÄÜ RXNE ÖĞ¶Ï + NVIC
+  * @brief  ï¿½ï¿½Ê¼ï¿½ï¿½ USART3
+  * @param  baud: ï¿½ï¿½ï¿½ï¿½ï¿½Ê£ï¿½ï¿½ï¿½ 115200
+  *   - ï¿½ï¿½ GPIOB + USART3 Ê±ï¿½ï¿½
+  *   - PB10 ï¿½ï¿½ï¿½ï¿½ AF7 ï¿½ï¿½ TXï¿½ï¿½ï¿½ï¿½ï¿½ì£©ï¿½ï¿½PB11 ï¿½ï¿½ï¿½ï¿½ AF7 ï¿½ï¿½ RXï¿½ï¿½ï¿½ï¿½ï¿½Õ£ï¿½
+  *   - 8N1 ï¿½ï¿½Ó²ï¿½ï¿½ï¿½ï¿½ï¿½Ø£ï¿½Ê¹ï¿½ï¿½ RXNE ï¿½Ğ¶ï¿½ + NVIC
   */
 void USART3_Init(uint32_t baud)
 {
@@ -372,14 +428,14 @@ void USART3_Init(uint32_t baud)
     USART_InitTypeDef   USART_InitStruct;
     NVIC_InitTypeDef    NVIC_InitStruct;
 
-    /* ---- ¿ªÊ±ÖÓ£ºUSART3 ÔÚ APB1£¬GPIOB ÔÚ AHB1 ---- */
+    /* ---- ï¿½ï¿½Ê±ï¿½Ó£ï¿½USART3 ï¿½ï¿½ APB1ï¿½ï¿½GPIOB ï¿½ï¿½ AHB1 ---- */
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_USART3, ENABLE);
 
-    /* ---- PB10(TX) + PB11(RX) ¸´ÓÃ USART3 ---- */
+    /* ---- PB10(TX) + PB11(RX) ï¿½ï¿½ï¿½ï¿½ USART3 ---- */
     GPIO_InitStruct.GPIO_Mode  = GPIO_Mode_AF;
-    GPIO_InitStruct.GPIO_OType = GPIO_OType_PP;     /* TX ÍÆÍì */
-    GPIO_InitStruct.GPIO_PuPd  = GPIO_PuPd_UP;      /* RX ÉÏÀ­ */
+    GPIO_InitStruct.GPIO_OType = GPIO_OType_PP;     /* TX ï¿½ï¿½ï¿½ï¿½ */
+    GPIO_InitStruct.GPIO_PuPd  = GPIO_PuPd_UP;      /* RX ï¿½ï¿½ï¿½ï¿½ */
     GPIO_InitStruct.GPIO_Speed = GPIO_Speed_100MHz;
     GPIO_InitStruct.GPIO_Pin   = USART3_TX_PIN | USART3_RX_PIN;
     GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -387,7 +443,7 @@ void USART3_Init(uint32_t baud)
     GPIO_PinAFConfig(USART3_TX_PORT, USART3_TX_SRC, USART3_AF);
     GPIO_PinAFConfig(USART3_RX_PORT, USART3_RX_SRC, USART3_AF);
 
-    /* ---- USART3 ²ÎÊı£º²¨ÌØÂÊ/8Î»/1Í£Ö¹Î»/ÎŞĞ£Ñé/ÊÕ·¢Ê¹ÄÜ ---- */
+    /* ---- USART3 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½/8Î»/1Í£Ö¹Î»/ï¿½ï¿½Ğ£ï¿½ï¿½/ï¿½Õ·ï¿½Ê¹ï¿½ï¿½ ---- */
     USART_InitStruct.USART_BaudRate            = baud;
     USART_InitStruct.USART_WordLength          = USART_WordLength_8b;
     USART_InitStruct.USART_StopBits            = USART_StopBits_1;
@@ -396,12 +452,12 @@ void USART3_Init(uint32_t baud)
     USART_InitStruct.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
     USART_Init(USART3, &USART_InitStruct);
 
-    /* ---- ¿ª RXNE ÖĞ¶Ï ---- */
+    /* ---- ï¿½ï¿½ RXNE ï¿½Ğ¶ï¿½ ---- */
     USART_ITConfig(USART3, USART_IT_RXNE, ENABLE);
     USART_ClearFlag(USART3, USART_FLAG_TC);
     USART_Cmd(USART3, ENABLE);
 
-    /* ---- NVIC£ºUSART3 È«¾ÖÖĞ¶Ï ---- */
+    /* ---- NVICï¿½ï¿½USART3 È«ï¿½ï¿½ï¿½Ğ¶ï¿½ ---- */
     NVIC_InitStruct.NVIC_IRQChannel                   = USART3_IRQn;
     NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 1;
     NVIC_InitStruct.NVIC_IRQChannelSubPriority        = 3;

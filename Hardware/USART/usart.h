@@ -1,16 +1,16 @@
 ﻿/**
   ******************************************************************************
   * @file    usart.h
-  * @brief   串口驱动头文件（USART1，中断接收 + 环形缓冲区 + printf 重定向）
+  * @brief   串口驱动头文件（USART1/2/3，中断接收 + 环形缓冲区 + printf 重定向）
   *
   * 硬件连接（STM32F407ZE）：
   *   USART1_TX -> PA9  （复用 AF7，推挽输出）
   *   USART1_RX -> PA10 （复用 AF7，浮空/上拉输入）
-  *   板载 USB-TTL 芯片（CH340/CP2102 等）引出 PA9/PA10 供上位机通信
+  *   板载 USB-TTL 芯片（CH340/CP2102 等）引出 PA9/PA10，日志口
   *
   *   USART2_TX -> PA2  （复用 AF7，推挽输出）
   *   USART2_RX -> PA3  （复用 AF7，浮空/上拉输入）
-  *   接蓝牙模块等外设，避免与 USB-TTL 共用 USART1 冲突
+  *   接 ESP32-CAM（拍照联动），与日志口 USART1 互不干扰
   *
   * 使用方法：
   *   USART1_Init(115200);                  // 初始化（含 NVIC 中断接收）
@@ -63,6 +63,9 @@
 #define BAUD_460800     460800
 
 void USART1_Init(uint32_t baud);               /* 初始化 USART1（GPIO+USART+NVIC） */
+#if USE_FREERTOS
+void USART1_LockInit(void);                     /* FreeRTOS：创建日志互斥锁（main 启动早期调用一次） */
+#endif
 void USART1_SendByte(uint8_t data);              /* 发送一个字节（阻塞等待 TXE） */
 void USART1_SendString(const char *str);         /* 发送字符串（遇 '\0' 结束） */
 void USART1_Printf(const char *fmt, ...);        /* 格式化发送（vsprintf） */

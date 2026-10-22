@@ -5,7 +5,7 @@
 #include "sensor_hub.h"
 
 /* ============ 硬件开关（全局有效，所有 .c 文件可见） ============ */
-#define USE_OLED        1   /* 0=没接OLED  1=接了OLED (TFTLCD触摸SPI: PB1 DC / PB9 CS / PB3 SCLK / PB5 MOSI，引脚唯一来源见 oled.h) */
+#define USE_OLED        1   /* 0=没接OLED  1=接了OLED（SSD1306 软件 SPI，引脚以 oled.h 为准） */
 #define USE_ESP8266     1   /* 0=没接WiFi  1=接了ESP8266 (USART3)   */
 #define USE_DHT11       1   /* 0=板载没接  1=接了DHT11温湿度 (PG9)  */
 #define USE_ML          1   /* 0=纯规则  1=TinyML MLP 辅助 (v1 二分类: 正常/入侵) */
@@ -32,6 +32,10 @@ void DecisionEngine_SetMode(Guard_Mode_t mode);
 Guard_Mode_t DecisionEngine_GetMode(void);
 Alert_Type_t DecisionEngine_Run(const Sensor_Data_t *data);
 const char *DecisionEngine_GetAlertString(Alert_Type_t alert);
+
+/* 重新进入布防静息采样（手动重新学习基线完成后调用）：
+   清空静息距离，重新给约 10s 布防缓冲采集"无人时的距离" */
+void DecisionEngine_RestartArm(void);
 
 #endif
 
